@@ -450,7 +450,3 @@ process.on("uncaughtException", (error) => {
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
 })
-
-  console.log("🚀 WaifuConvert Backend SIMPLES rodando na porta:", PORT)
-  cleanupOldFiles()
-})
