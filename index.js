@@ -11,11 +11,8 @@ const PORT = process.env.PORT || 5000
 
 const DOWNLOADS = path.join(__dirname, "downloads")
 
-// 🚀 YT-DLP PATH PARA PRODUÇÃO E DESENVOLVIMENTO
-const ytDlpPath =
-  process.env.NODE_ENV === "production"
-    ? "yt-dlp" // No servidor usa comando global
-    : `"c:\\Users\\andre\\Downloads\\Projeto Convert\\WaifuConvert-v0\\Backend\\yt-dlp.exe"`
+// 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
+const ytDlpPath = "yt-dlp" // Sempre usar comando global no Railway
 
 // User-Agents rotativos para evitar bloqueios
 const userAgents = [
@@ -180,6 +177,8 @@ app.post("/download", async (req, res) => {
     // Passo 1: Obter informações JSON
     const jsonCmd = `${baseCmd} -j "${url}"`
 
+    console.log("🚀 Executando comando:", jsonCmd)
+
     exec(jsonCmd, { timeout: 30000 }, (jsonErr, jsonStdout, jsonStderr) => {
       if (jsonErr) {
         console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
@@ -239,7 +238,7 @@ app.post("/download", async (req, res) => {
       }
 
       console.log("🚀 Iniciando download/conversão...")
-      console.log("📝 Formato selecionado:", format === "mp3" ? "MP3 Audio" : `MP4 ${quality}p`)
+      console.log("📝 Comando completo:", cmd)
 
       // Passo 2: Fazer o download
       exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
@@ -351,15 +350,7 @@ app.get("/health", (req, res) => {
   }
 
   // Verificar se yt-dlp existe
-  if (process.env.NODE_ENV === "production") {
-    stats.yt_dlp_status = "Using global yt-dlp"
-  } else {
-    if (fs.existsSync(ytDlpPath.replace(/"/g, ""))) {
-      stats.yt_dlp_status = "Found"
-    } else {
-      stats.yt_dlp_status = "Not Found"
-    }
-  }
+  stats.yt_dlp_status = "Using global yt-dlp"
 
   res.json(stats)
 })
