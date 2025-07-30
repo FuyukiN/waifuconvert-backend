@@ -61,6 +61,22 @@ function getNextCookie() {
   return cookieFile
 }
 
+// 🎯 DETECTAR PLATAFORMA PARA OTIMIZAÇÕES ESPECÍFICAS
+function detectPlatform(url) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    if (hostname.includes("tiktok")) return "tiktok"
+    if (hostname.includes("twitter") || hostname.includes("x.com")) return "twitter"
+    if (hostname.includes("youtube") || hostname.includes("youtu.be")) return "youtube"
+    if (hostname.includes("instagram")) return "instagram"
+    if (hostname.includes("reddit")) return "reddit"
+    if (hostname.includes("facebook")) return "facebook"
+    return "unknown"
+  } catch (error) {
+    return "unknown"
+  }
+}
+
 // 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
@@ -176,14 +192,31 @@ function isAuthenticationError(errorMessage) {
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
 }
 
-// Função para obter seletor de formato otimizado
-function getFormatSelector(format, quality) {
+// 🎯 FUNÇÃO OTIMIZADA PARA SELETOR DE FORMATO POR PLATAFORMA
+function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
     return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
   }
 
   const q = Number.parseInt(quality)
 
+  // 🎵 CONFIGURAÇÕES ESPECÍFICAS PARA TIKTOK (CORRIGE CORRUPÇÃO)
+  if (platform === "tiktok") {
+    console.log("🎵 Aplicando configurações específicas do TikTok para evitar corrupção...")
+
+    // TikTok funciona melhor com formatos específicos e sem merge complexo
+    if (q >= 1080) {
+      return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+    } else if (q >= 720) {
+      return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+    } else if (q >= 480) {
+      return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+    } else {
+      return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+    }
+  }
+
+  // Configurações padrão para outras plataformas
   if (q >= 1080) {
     return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
   } else if (q >= 720) {
@@ -195,9 +228,19 @@ function getFormatSelector(format, quality) {
   }
 }
 
-// 🛡️ FUNÇÃO DE COMANDO ATUALIZADA PARA USAR COOKIES
-function getAntiDetectionCmd(userAgent, cookieFile) {
+// 🛡️ FUNÇÃO DE COMANDO ATUALIZADA COM OTIMIZAÇÕES POR PLATAFORMA
+function getAntiDetectionCmd(userAgent, cookieFile, platform) {
   let cmd = `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
+
+  // 🎵 CONFIGURAÇÕES ESPECÍFICAS PARA TIKTOK
+  if (platform === "tiktok") {
+    console.log("🎵 Aplicando configurações anti-corrupção para TikTok...")
+    // Configurações específicas para TikTok evitarem corrupção
+    cmd += ` --fragment-retries 10 --retry-sleep 2`
+    cmd += ` --http-chunk-size 10485760` // 10MB chunks para evitar fragmentação
+    cmd += ` --no-part` // Não usar arquivos .part que podem corromper
+    cmd += ` --concurrent-fragments 1` // Download sequencial para TikTok
+  }
 
   // Adiciona o cookie se um arquivo for fornecido
   if (cookieFile) {
@@ -219,7 +262,10 @@ app.post("/download", async (req, res) => {
   try {
     const { url, format, quality, platform } = req.body
 
-    console.log("🎯 Nova requisição:", { url, format, quality, platform })
+    // 🎯 DETECTAR PLATAFORMA AUTOMATICAMENTE
+    const detectedPlatform = detectPlatform(url)
+
+    console.log("🎯 Nova requisição:", { url, format, quality, platform: detectedPlatform })
     console.log("🕵️ User-Agent:", randomUA.substring(0, 50) + "...")
     if (cookieFile) {
       console.log("🍪 Usando cookie:", path.basename(cookieFile))
@@ -239,7 +285,7 @@ app.post("/download", async (req, res) => {
     console.log("📋 Obtendo informações do vídeo...")
 
     // Comando base com proteções e o cookie selecionado
-    const baseCmd = getAntiDetectionCmd(randomUA, cookieFile)
+    const baseCmd = getAntiDetectionCmd(randomUA, cookieFile, detectedPlatform)
 
     const jsonCmd = `${baseCmd} -j "${url}"`
 
@@ -277,14 +323,25 @@ app.post("/download", async (req, res) => {
       let cmd
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
-        const formatSelector = getFormatSelector("mp3", quality)
+        const formatSelector = getFormatSelector("mp3", quality, detectedPlatform)
         cmd = `${baseCmd} -f "${formatSelector}" --extract-audio --audio-format mp3 --audio-quality ${q}k --add-metadata --embed-thumbnail -o "${outputPath}" "${url}"`
       } else {
-        const formatSelector = getFormatSelector("mp4", quality)
-        cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
+        const formatSelector = getFormatSelector("mp4", quality, detectedPlatform)
+
+        // 🎵 COMANDO ESPECÍFICO PARA TIKTOK (EVITA CORRUPÇÃO)
+        if (detectedPlatform === "tiktok") {
+          console.log("🎵 Usando comando otimizado para TikTok...")
+          // Para TikTok, não usar merge complexo que pode corromper
+          cmd = `${baseCmd} -f "${formatSelector}" --add-metadata -o "${outputPath}" "${url}"`
+        } else {
+          // Comando padrão para outras plataformas
+          cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
+        }
       }
 
       console.log("🚀 Iniciando download/conversão...")
+      console.log("📝 Plataforma detectada:", detectedPlatform)
+
       exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
@@ -313,12 +370,21 @@ app.post("/download", async (req, res) => {
           return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
         }
 
+        console.log("✅ Download concluído:", {
+          platform: detectedPlatform,
+          filename: filename,
+          userFriendlyName: userFriendlyName,
+          size: `${(fileSize / 1024 / 1024).toFixed(2)} MB`,
+          path: finalFilePath,
+        })
+
         res.json({
           file: `/downloads/${filename}`,
           filename: userFriendlyName,
           size: fileSize,
           title: data.title,
           duration: data.duration,
+          platform: detectedPlatform,
           quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
         })
       })
@@ -367,6 +433,7 @@ app.get("/health", (req, res) => {
     user_agents_count: userAgents.length,
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || "development",
+    tiktok_optimizations: "enabled",
   }
 
   // Verificar se yt-dlp existe
@@ -413,10 +480,11 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend - Cookie Rotation Edition!",
-    version: "3.0.0",
+    message: "🎌 WaifuConvert Backend - TikTok Fixed Edition!",
+    version: "3.1.0",
     status: "online",
     cookies_loaded: cookiePool.length,
+    tiktok_fix: "enabled",
   })
 })
 
@@ -430,7 +498,7 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - COOKIE ROTATION EDITION")
+  console.log("🚀 WaifuConvert Backend - TIKTOK FIXED EDITION")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
@@ -438,7 +506,8 @@ app.listen(PORT, () => {
   // Carrega os cookies na inicialização
   loadCookiePool()
 
-  console.log("🛡️ Proteções ativadas: Rotação de Cookies + Anti-detecção")
+  console.log("🛡️ Proteções ativadas: Rotação de Cookies + Anti-detecção + TikTok Fix")
+  console.log("🎵 TikTok: Otimizações anti-corrupção ativadas")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
