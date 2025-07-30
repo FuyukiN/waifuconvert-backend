@@ -14,13 +14,14 @@ const DOWNLOADS = path.join(__dirname, "downloads")
 // 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
 const ytDlpPath = "yt-dlp" // Sempre usar comando global no Railway
 
-// User-Agents rotativos para evitar bloqueios
+// User-Agents rotativos para evitar bloqueios - ATUALIZADOS
 const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/131.0.0.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
 // 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
@@ -110,7 +111,7 @@ function cleanupOldFiles() {
   }
 }
 
-// Função para detectar erros de autenticação
+// Função para detectar erros de autenticação - MELHORADA
 function isAuthenticationError(errorMessage) {
   const authErrors = [
     "requires authentication",
@@ -122,6 +123,12 @@ function isAuthenticationError(errorMessage) {
     "sign in to confirm",
     "cookies",
     "Use --cookies",
+    "cookies-from-browser",
+    "not a bot",
+    "captcha",
+    "verification",
+    "blocked",
+    "rate limit",
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -144,6 +151,11 @@ function getFormatSelector(format, quality) {
   } else {
     return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
   }
+}
+
+// 🛡️ FUNÇÃO PARA COMANDO BASE COM PROTEÇÕES ANTI-DETECÇÃO
+function getAntiDetectionCmd(userAgent) {
+  return `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
 }
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
@@ -171,8 +183,8 @@ app.post("/download", async (req, res) => {
 
     console.log("📋 Obtendo informações do vídeo...")
 
-    // Comando base com User-Agent e configurações anti-bloqueio
-    const baseCmd = `${ytDlpPath} --user-agent "${randomUA}" --no-playlist --no-check-certificates --prefer-insecure`
+    // Comando base com proteções anti-detecção melhoradas
+    const baseCmd = getAntiDetectionCmd(randomUA)
 
     // Passo 1: Obter informações JSON
     const jsonCmd = `${baseCmd} -j "${url}"`
@@ -188,9 +200,9 @@ app.post("/download", async (req, res) => {
           console.log("🔒 Conteúdo requer autenticação")
           return res.status(400).json({
             error:
-              "Este conteúdo é privado ou requer login. Por questões de segurança e privacidade, não suportamos este tipo de conteúdo.",
+              "Este conteúdo é privado, requer login ou foi bloqueado por detecção de bot. Tente com um vídeo público diferente.",
             type: "private_content",
-            suggestion: "Tente com um vídeo público da mesma plataforma.",
+            suggestion: "Tente com um vídeo público da mesma plataforma ou de outra plataforma como TikTok.",
           })
         }
 
@@ -249,7 +261,7 @@ app.post("/download", async (req, res) => {
           // Verificar novamente se é erro de autenticação durante download
           if (isAuthenticationError(stderr2 || stdout2)) {
             return res.status(400).json({
-              error: "Conteúdo privado detectado durante o download. Tente com um vídeo público.",
+              error: "Conteúdo privado ou bloqueado detectado durante o download. Tente com um vídeo público.",
               type: "private_content",
             })
           }
@@ -394,7 +406,7 @@ app.get("/test-ua", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "🎌 WaifuConvert Backend está funcionando!",
-    version: "1.0.0",
+    version: "2.0.0",
     status: "online",
     endpoints: {
       health: "/health",
@@ -425,7 +437,7 @@ app.listen(PORT, () => {
     "waifuconvert.vercel.app",
   ])
   console.log("🕵️ User-Agents disponíveis:", userAgents.length)
-  console.log("🛡️ Proteções ativadas: Anti-bloqueio + Detecção de conteúdo privado")
+  console.log("🛡️ Proteções ativadas: Anti-bloqueio + Detecção de conteúdo privado + Anti-detecção")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
