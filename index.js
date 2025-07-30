@@ -7,7 +7,7 @@ const path = require("path")
 const app = express()
 
 // 🌐 PORTA DINÂMICA PARA DEPLOY
-const PORT = process.env.PORT || 5000
+const PORT = process.env.PORT || 8080
 
 const DOWNLOADS = path.join(__dirname, "downloads")
 
