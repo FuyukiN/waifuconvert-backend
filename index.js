@@ -3,95 +3,157 @@ const cors = require("cors")
 const { exec } = require("child_process")
 const fs = require("fs")
 const path = require("path")
+const { promisify } = require("util")
 
+const execAsync = promisify(exec)
 const app = express()
-
-// 🌐 PORTA DINÂMICA PARA DEPLOY
 const PORT = process.env.PORT || 8080
-
 const DOWNLOADS = path.join(__dirname, "downloads")
+const ytDlpPath = "yt-dlp"
 
-// 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
-const ytDlpPath = "yt-dlp" // Sempre usar comando global no Railway
-
-// User-Agents rotativos para evitar bloqueios - ATUALIZADOS
+// 🛡️ MÚLTIPLOS USER-AGENTS MAIS AGRESSIVOS
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/131.0.0.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 ]
 
-// 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
     origin: [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://www.waifuconvert.com", // ← SEU DOMÍNIO PRINCIPAL
-      "https://waifuconvert.com", // ← SEU DOMÍNIO SEM WWW
-      "https://waifuconvert.vercel.app", // ← SEU DOMÍNIO VERCEL
+      "https://www.waifuconvert.com",
+      "https://waifuconvert.com",
+      "https://waifuconvert.vercel.app",
     ],
     credentials: true,
   }),
 )
 
-app.use(express.json())
+app.use(express.json({ limit: "10mb" }))
 app.use("/downloads", express.static(DOWNLOADS))
 
-// Criar diretório se não existir
 if (!fs.existsSync(DOWNLOADS)) {
   fs.mkdirSync(DOWNLOADS, { recursive: true })
   console.log("📁 Diretório downloads criado:", DOWNLOADS)
 }
 
-// Função para obter User-Agent aleatório
 function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// Limpa nome de arquivos de caracteres problemáticos
 function safeFilename(str) {
   return (str || "WaifuConvert")
     .replace(/[\\/:*?"<>|]/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/[^\x00-\x7F]/g, "") // Remove caracteres não-ASCII
+    .replace(/\s+/g, "_")
+    .replace(/[^\w\-_.()]/g, "")
     .trim()
-    .substring(0, 80) // Reduzir tamanho
+    .substring(0, 80)
 }
 
-// Função para encontrar arquivo criado recentemente
-function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
+// 🔍 VERIFICAÇÃO DE INTEGRIDADE DE ARQUIVO
+function verifyFileIntegrity(filePath) {
   try {
-    const files = fs.readdirSync(baseDir)
-    const recentFiles = files.filter((file) => {
-      const filePath = path.join(baseDir, file)
-      const stats = fs.statSync(filePath)
-      const fileTime = stats.birthtime.getTime()
-      const timeDiff = Math.abs(fileTime - timestamp)
-
-      // Arquivo criado nos últimos 5 minutos e tem extensão correta
-      return timeDiff < 300000 && extensions.some((ext) => file.toLowerCase().endsWith(ext))
-    })
-
-    // Retornar o mais recente
-    if (recentFiles.length > 0) {
-      recentFiles.sort((a, b) => {
-        const aTime = fs.statSync(path.join(baseDir, a)).birthtime.getTime()
-        const bTime = fs.statSync(path.join(baseDir, b)).birthtime.getTime()
-        return bTime - aTime
-      })
-      return path.join(baseDir, recentFiles[0])
+    if (!fs.existsSync(filePath)) {
+      return { valid: false, reason: "File does not exist" }
     }
+
+    const stats = fs.statSync(filePath)
+
+    // Verificar tamanho mínimo
+    if (stats.size < 1000) {
+      return { valid: false, reason: "File too small" }
+    }
+
+    // Verificar se não é apenas headers
+    if (stats.size < 10000) {
+      return { valid: false, reason: "File suspiciously small" }
+    }
+
+    // Ler primeiros bytes para verificar formato
+    const buffer = fs.readFileSync(filePath, { start: 0, end: 20 })
+    const hex = buffer.toString("hex")
+
+    // Verificar assinaturas de arquivo
+    const isMP4 = hex.includes("667479") || hex.includes("6d646174") || hex.includes("6d6f6f76")
+    const isMP3 = hex.startsWith("494433") || hex.startsWith("fff3") || hex.startsWith("fff2")
+
+    if (filePath.endsWith(".mp4") && !isMP4) {
+      return { valid: false, reason: "Invalid MP4 signature" }
+    }
+
+    if (filePath.endsWith(".mp3") && !isMP3) {
+      return { valid: false, reason: "Invalid MP3 signature" }
+    }
+
+    return { valid: true, size: stats.size }
   } catch (error) {
-    console.error("❌ Erro ao procurar arquivo:", error)
+    return { valid: false, reason: error.message }
   }
-  return null
 }
 
-// Função para limpar arquivos antigos
+// 🛡️ COMANDO MÁXIMO ANTI-DETECÇÃO COM MÚLTIPLAS ESTRATÉGIAS
+function getUltimateAntiDetectionCmd(userAgent, attempt = 1) {
+  let baseCmd = `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure`
+
+  // Configurações básicas anti-detecção
+  baseCmd += ` --extractor-retries 5 --fragment-retries 5 --retry-sleep ${attempt} --no-call-home --geo-bypass`
+  baseCmd += ` --socket-timeout 30 --sleep-interval ${attempt} --max-sleep-interval ${attempt * 2}`
+
+  // Headers realistas
+  baseCmd += ` --add-header "Accept-Language:en-US,en;q=0.9,pt;q=0.8"`
+  baseCmd += ` --add-header "Accept-Encoding:gzip, deflate, br"`
+  baseCmd += ` --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"`
+  baseCmd += ` --add-header "Connection:keep-alive"`
+  baseCmd += ` --add-header "Upgrade-Insecure-Requests:1"`
+  baseCmd += ` --add-header "Sec-Fetch-Dest:document"`
+  baseCmd += ` --add-header "Sec-Fetch-Mode:navigate"`
+  baseCmd += ` --add-header "Sec-Fetch-Site:none"`
+  baseCmd += ` --add-header "Cache-Control:max-age=0"`
+  baseCmd += ` --add-header "DNT:1"`
+
+  // Configurações específicas por tentativa
+  if (attempt >= 2) {
+    baseCmd += ` --force-ipv4 --no-warnings`
+  }
+
+  if (attempt >= 3) {
+    baseCmd += ` --ignore-errors --no-abort-on-error`
+  }
+
+  return baseCmd
+}
+
+// 🎯 MÚLTIPLAS ESTRATÉGIAS DE FORMATO
+function getFormatStrategies(format, quality) {
+  const strategies = []
+
+  if (format === "mp3") {
+    const q = Number.parseInt(quality || "128")
+    strategies.push(
+      `bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best`,
+      `bestaudio[abr<=${q}]/bestaudio/best`,
+      `best[ext=m4a]/best[ext=mp3]/best`,
+      `worst[ext=m4a]/worst[ext=mp3]/worst`,
+    )
+  } else {
+    const q = Number.parseInt(quality || "720")
+    strategies.push(
+      `bestvideo[height<=${q}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${q}][ext=mp4]`,
+      `bestvideo[height<=${q}]+bestaudio/best[height<=${q}]`,
+      `best[height<=${q}][ext=mp4]/best[height<=${q}]`,
+      `best[ext=mp4]/best`,
+      `worst[ext=mp4]/worst`,
+    )
+  }
+
+  return strategies
+}
+
 function cleanupOldFiles() {
   try {
     const files = fs.readdirSync(DOWNLOADS)
@@ -100,7 +162,6 @@ function cleanupOldFiles() {
     files.forEach((file) => {
       const filePath = path.join(DOWNLOADS, file)
       const stats = fs.statSync(filePath)
-
       if (stats.mtime.getTime() < oneHourAgo) {
         fs.unlinkSync(filePath)
         console.log("🗑️ Arquivo antigo removido:", file)
@@ -111,281 +172,205 @@ function cleanupOldFiles() {
   }
 }
 
-// Função para detectar erros de autenticação - MELHORADA
-function isAuthenticationError(errorMessage) {
-  const authErrors = [
-    "requires authentication",
-    "requiring login",
-    "NSFW tweet",
-    "private video",
-    "private account",
-    "login required",
-    "sign in to confirm",
-    "cookies",
-    "Use --cookies",
-    "cookies-from-browser",
-    "not a bot",
-    "captcha",
-    "verification",
-    "blocked",
-    "rate limit",
-  ]
-
-  return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
-}
-
-// Função para obter seletor de formato otimizado
-function getFormatSelector(format, quality) {
-  if (format === "mp3") {
-    return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
-  }
-
-  const q = Number.parseInt(quality)
-
-  if (q >= 1080) {
-    return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-  } else if (q >= 720) {
-    return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-  } else if (q >= 480) {
-    return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-  } else {
-    return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-  }
-}
-
-// 🛡️ FUNÇÃO PARA COMANDO BASE COM PROTEÇÕES ANTI-DETECÇÃO
-function getAntiDetectionCmd(userAgent) {
-  return `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
-}
-
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
-// Rota principal de download/conversão
+// 🚀 ROTA PRINCIPAL COM MÚLTIPLAS TENTATIVAS E VERIFICAÇÃO DE INTEGRIDADE
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
-  const randomUA = getRandomUserAgent()
+  const requestId = `req_${startTime}_${Math.random().toString(36).substr(2, 9)}`
+
+  console.log(`🎯 [${requestId}] Nova requisição iniciada`)
 
   try {
-    const { url, format, quality, platform } = req.body
-
-    console.log("🎯 Nova requisição:", { url, format, quality, platform })
-    console.log("🕵️ User-Agent:", randomUA.substring(0, 50) + "...")
+    const { url, format, quality } = req.body
 
     if (!url || !format) {
-      console.error("❌ Faltando campos no request:", req.body)
       return res.status(400).json({ error: "URL e formato são obrigatórios" })
     }
 
-    // Gera nome único mais simples
-    const uniqueId = Date.now() + "-" + Math.floor(Math.random() * 100000)
+    console.log(`📋 [${requestId}] URL: ${url}`)
+    console.log(`📋 [${requestId}] Formato: ${format} ${quality || "auto"}`)
+
+    const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     const ext = format === "mp3" ? "mp3" : "mp4"
-    const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
 
-    console.log("📋 Obtendo informações do vídeo...")
+    // 🔄 MÚLTIPLAS TENTATIVAS COM DIFERENTES ESTRATÉGIAS
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      console.log(`🚀 [${requestId}] Tentativa ${attempt}/3`)
 
-    // Comando base com proteções anti-detecção melhoradas
-    const baseCmd = getAntiDetectionCmd(randomUA)
+      const userAgent = getRandomUserAgent()
+      const baseCmd = getUltimateAntiDetectionCmd(userAgent, attempt)
 
-    // Passo 1: Obter informações JSON
-    const jsonCmd = `${baseCmd} -j "${url}"`
+      try {
+        // Passo 1: Obter informações
+        console.log(`📊 [${requestId}] Obtendo informações (tentativa ${attempt})...`)
+        const infoCmd = `${baseCmd} --print "%(title)s|||%(duration)s|||%(ext)s" "${url}"`
 
-    console.log("🚀 Executando comando:", jsonCmd)
+        const { stdout: infoStdout, stderr: infoStderr } = await execAsync(infoCmd, {
+          timeout: 45000,
+          maxBuffer: 1024 * 1024,
+        })
 
-    exec(jsonCmd, { timeout: 30000 }, (jsonErr, jsonStdout, jsonStderr) => {
-      if (jsonErr) {
-        console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
+        if (infoStderr && infoStderr.includes("ERROR")) {
+          throw new Error(`Info error: ${infoStderr}`)
+        }
 
-        // Verificar se é erro de autenticação
-        if (isAuthenticationError(jsonStderr || jsonStdout)) {
-          console.log("🔒 Conteúdo requer autenticação")
-          return res.status(400).json({
-            error:
-              "Este conteúdo é privado, requer login ou foi bloqueado por detecção de bot. Tente com um vídeo público diferente.",
-            type: "private_content",
-            suggestion: "Tente com um vídeo público da mesma plataforma ou de outra plataforma como TikTok.",
+        const [title, duration, originalExt] = infoStdout.trim().split("|||")
+        const safeTitle = safeFilename(title || "Unknown")
+
+        console.log(`✅ [${requestId}] Info obtida: ${title}`)
+
+        // 🎯 TENTAR MÚLTIPLAS ESTRATÉGIAS DE FORMATO
+        const formatStrategies = getFormatStrategies(format, quality)
+
+        for (let strategyIndex = 0; strategyIndex < formatStrategies.length; strategyIndex++) {
+          const formatSelector = formatStrategies[strategyIndex]
+          const filename = `${safeTitle}_${format}_${quality || "auto"}_${uniqueId}_s${strategyIndex}.${ext}`
+          const outputPath = path.join(DOWNLOADS, filename)
+
+          console.log(`🎬 [${requestId}] Tentando estratégia ${strategyIndex + 1}: ${formatSelector}`)
+
+          try {
+            let downloadCmd
+            if (format === "mp3") {
+              const q = Number.parseInt(quality || "128")
+              downloadCmd = `${baseCmd} -f "${formatSelector}" --extract-audio --audio-format mp3 --audio-quality ${q}k --add-metadata -o "${outputPath}" "${url}"`
+            } else {
+              downloadCmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata -o "${outputPath}" "${url}"`
+            }
+
+            console.log(`⬇️ [${requestId}] Executando download...`)
+
+            const { stdout: downloadStdout, stderr: downloadStderr } = await execAsync(downloadCmd, {
+              timeout: 600000, // 10 minutos
+              maxBuffer: 50 * 1024 * 1024,
+            })
+
+            // Verificar integridade do arquivo
+            const integrity = verifyFileIntegrity(outputPath)
+
+            if (integrity.valid) {
+              const processingTime = Date.now() - startTime
+              console.log(
+                `✅ [${requestId}] SUCESSO! Arquivo válido: ${filename} (${(integrity.size / 1024 / 1024).toFixed(2)}MB)`,
+              )
+
+              return res.json({
+                success: true,
+                file: `/downloads/${filename}`,
+                filename: `${safeTitle}.${ext}`,
+                size: integrity.size,
+                title: title,
+                duration: duration,
+                processing_time: processingTime,
+                attempt: attempt,
+                strategy: strategyIndex + 1,
+                request_id: requestId,
+              })
+            } else {
+              console.log(`❌ [${requestId}] Arquivo inválido (${integrity.reason}), tentando próxima estratégia...`)
+              // Limpar arquivo inválido
+              if (fs.existsSync(outputPath)) {
+                fs.unlinkSync(outputPath)
+              }
+            }
+          } catch (strategyError) {
+            console.log(`❌ [${requestId}] Estratégia ${strategyIndex + 1} falhou: ${strategyError.message}`)
+            // Limpar arquivo parcial
+            if (fs.existsSync(outputPath)) {
+              try {
+                fs.unlinkSync(outputPath)
+              } catch {}
+            }
+          }
+        }
+      } catch (attemptError) {
+        console.log(`❌ [${requestId}] Tentativa ${attempt} falhou: ${attemptError.message}`)
+
+        if (attempt === 3) {
+          // Última tentativa - retornar erro
+          return res.status(500).json({
+            error: "Todas as tentativas falharam",
+            details: attemptError.message.substring(0, 200),
+            request_id: requestId,
+            attempts: 3,
           })
         }
 
-        return res.status(500).json({ error: "Falha ao obter informações do vídeo" })
+        // Aguardar antes da próxima tentativa
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2000))
       }
-
-      let data
-      try {
-        const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
-        if (!jsonLine) {
-          throw new Error("Nenhuma linha JSON encontrada")
-        }
-        data = JSON.parse(jsonLine)
-        console.log("✅ Informações obtidas:", data.title)
-        console.log(
-          "📊 Duração:",
-          data.duration
-            ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, "0")}`
-            : "N/A",
-        )
-      } catch (e) {
-        console.error("❌ Erro ao parsear JSON:", e)
-        return res.status(500).json({ error: "Resposta JSON inválida" })
-      }
-
-      // Nome de arquivo mais seguro
-      const safeTitle = safeFilename(data.title)
-      const outputFilename = `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
-      const outputPath = path.join(DOWNLOADS, outputFilename)
-
-      let cmd
-      if (format === "mp3") {
-        console.log("🎵 Configurando conversão para MP3...")
-
-        const q = Number.parseInt(quality || "128")
-        const formatSelector = getFormatSelector("mp3", quality)
-
-        cmd = `${baseCmd} -f "${formatSelector}" --extract-audio --audio-format mp3 --audio-quality ${q}k --add-metadata --embed-thumbnail -o "${outputPath}" "${url}"`
-      } else {
-        console.log("🎬 Configurando download para MP4...")
-
-        const formatSelector = getFormatSelector("mp4", quality)
-
-        cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
-      }
-
-      console.log("🚀 Iniciando download/conversão...")
-      console.log("📝 Comando completo:", cmd)
-
-      // Passo 2: Fazer o download
-      exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
-        if (error) {
-          console.error("❌ Erro no download:", stderr2 || stdout2)
-          console.error("❌ Código de erro:", error.code)
-
-          // Verificar novamente se é erro de autenticação durante download
-          if (isAuthenticationError(stderr2 || stdout2)) {
-            return res.status(400).json({
-              error: "Conteúdo privado ou bloqueado detectado durante o download. Tente com um vídeo público.",
-              type: "private_content",
-            })
-          }
-
-          return res.status(500).json({ error: "Falha no download/conversão" })
-        }
-
-        console.log("📤 Download concluído")
-
-        // Estratégia 1: Verificar se o arquivo esperado existe
-        let finalFilePath = outputPath
-
-        if (!fs.existsSync(finalFilePath)) {
-          console.log("🔍 Arquivo esperado não encontrado, procurando arquivos recentes...")
-
-          // Estratégia 2: Procurar arquivo criado recentemente
-          finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
-
-          if (!finalFilePath) {
-            console.error("❌ Nenhum arquivo encontrado")
-            return res.status(500).json({ error: "Arquivo não foi criado" })
-          }
-        }
-
-        const filename = path.basename(finalFilePath)
-        const userFriendlyName = `${safeTitle} - ${qualLabel}.${ext}`
-        const fileSize = fs.statSync(finalFilePath).size
-
-        // Verificar se o arquivo não está vazio
-        if (fileSize < 1000) {
-          console.error("❌ Arquivo muito pequeno, possível erro")
-          return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
-        }
-
-        console.log("✅ Download concluído:", {
-          filename: filename,
-          userFriendlyName: userFriendlyName,
-          size: `${(fileSize / 1024 / 1024).toFixed(2)} MB`,
-          path: finalFilePath,
-        })
-
-        // Resposta JSON para frontend
-        res.json({
-          file: `/downloads/${filename}`,
-          filename: userFriendlyName,
-          size: fileSize,
-          title: data.title,
-          duration: data.duration,
-          quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-        })
-
-        console.log(
-          `[${new Date().toLocaleString()}] ✅ Download pronto: ${userFriendlyName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`,
-        )
-      })
+    }
+  } catch (error) {
+    console.error(`❌ [${requestId}] Erro geral:`, error)
+    res.status(500).json({
+      error: "Erro interno do servidor",
+      request_id: requestId,
     })
-  } catch (e) {
-    console.error("❌ Erro inesperado:", e)
-    res.status(500).json({ error: "Erro interno do servidor" })
   }
 })
 
-// Rota de download (força "salvar como")
+// Outras rotas mantidas...
 app.get("/downloads/:file", (req, res) => {
   const filePath = path.join(DOWNLOADS, req.params.file)
-
-  console.log("📥 Solicitação de download:", req.params.file)
 
   if (fs.existsSync(filePath)) {
     const stats = fs.statSync(filePath)
 
-    // Headers otimizados para forçar download
+    // Verificar integridade antes de enviar
+    const integrity = verifyFileIntegrity(filePath)
+    if (!integrity.valid) {
+      console.error("❌ Arquivo corrompido detectado:", req.params.file)
+      return res.status(404).json({ error: "Arquivo corrompido" })
+    }
+
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(req.params.file)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", stats.size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-    res.setHeader("Pragma", "no-cache")
-    res.setHeader("Expires", "0")
 
-    console.log("✅ Enviando arquivo:", req.params.file, `(${(stats.size / 1024 / 1024).toFixed(2)} MB)`)
+    console.log("✅ Enviando arquivo verificado:", req.params.file, `(${(stats.size / 1024 / 1024).toFixed(2)} MB)`)
     res.sendFile(filePath)
   } else {
-    console.error("❌ Arquivo não encontrado:", filePath)
     res.status(404).json({ error: "Arquivo não encontrado" })
   }
 })
 
-// Rota para verificar status do servidor
 app.get("/health", (req, res) => {
-  const stats = {
+  res.json({
     status: "OK",
+    version: "3.0.0 - Bulletproof Edition",
     timestamp: new Date().toISOString(),
-    downloads_dir: DOWNLOADS,
-    yt_dlp_path: ytDlpPath,
-    user_agents_count: userAgents.length,
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
-  }
-
-  // Verificar se yt-dlp existe
-  stats.yt_dlp_status = "Using global yt-dlp"
-
-  res.json(stats)
+    features: [
+      "Multiple retry attempts",
+      "File integrity verification",
+      "Multiple format strategies",
+      "Advanced anti-detection",
+    ],
+  })
 })
 
-// Rota para listar arquivos (debug)
 app.get("/files", (req, res) => {
   try {
     const files = fs.readdirSync(DOWNLOADS).map((file) => {
       const filePath = path.join(DOWNLOADS, file)
       const stats = fs.statSync(filePath)
+      const integrity = verifyFileIntegrity(filePath)
+
       return {
         name: file,
         size: stats.size,
         size_mb: (stats.size / 1024 / 1024).toFixed(2),
         created: stats.birthtime,
-        modified: stats.mtime,
         age_minutes: Math.floor((Date.now() - stats.birthtime.getTime()) / 60000),
+        integrity: integrity.valid ? "✅ Valid" : `❌ ${integrity.reason}`,
       }
     })
 
     res.json({
       files,
       total_files: files.length,
+      valid_files: files.filter((f) => f.integrity.includes("✅")).length,
       total_size_mb: files.reduce((sum, f) => sum + Number.parseFloat(f.size_mb), 0).toFixed(2),
     })
   } catch (error) {
@@ -393,52 +378,30 @@ app.get("/files", (req, res) => {
   }
 })
 
-// Rota para testar User-Agent (debug)
-app.get("/test-ua", (req, res) => {
-  res.json({
-    current_ua: getRandomUserAgent(),
-    available_uas: userAgents.length,
-    sample_uas: userAgents.slice(0, 2),
-  })
-})
-
-// 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend está funcionando!",
-    version: "2.0.0",
+    message: "🎌 WaifuConvert Backend - Bulletproof Edition",
+    version: "3.0.0",
     status: "online",
-    endpoints: {
-      health: "/health",
-      download: "/download (POST)",
-      files: "/files",
-      test_ua: "/test-ua",
-    },
+    features: [
+      "✅ Multiple retry attempts (3x)",
+      "✅ File integrity verification",
+      "✅ Multiple format strategies (5x)",
+      "✅ Advanced anti-detection",
+      "✅ Corruption prevention",
+    ],
   })
 })
 
-// Middleware de tratamento de erros
-app.use((error, req, res, next) => {
-  console.error("❌ Erro não tratado:", error)
-  res.status(500).json({
-    error: "Erro interno do servidor",
-  })
-})
-
-// 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend rodando na porta:", PORT)
-  console.log("📁 Diretório de downloads:", DOWNLOADS)
-  console.log("🛠️ yt-dlp path:", ytDlpPath)
-  console.log("🌐 CORS habilitado para:", [
-    "localhost:3000",
-    "www.waifuconvert.com",
-    "waifuconvert.com",
-    "waifuconvert.vercel.app",
-  ])
-  console.log("🕵️ User-Agents disponíveis:", userAgents.length)
-  console.log("🛡️ Proteções ativadas: Anti-bloqueio + Detecção de conteúdo privado + Anti-detecção")
-  console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
+  console.log("🚀 WaifuConvert Backend - BULLETPROOF EDITION")
+  console.log(`🌐 Porta: ${PORT}`)
+  console.log("🛡️ Recursos ativados:")
+  console.log("  ✅ 3 tentativas por requisição")
+  console.log("  ✅ 5 estratégias de formato por tentativa")
+  console.log("  ✅ Verificação de integridade de arquivo")
+  console.log("  ✅ Anti-detecção avançado")
+  console.log("  ✅ Prevenção de corrupção")
 
   cleanupOldFiles()
 })
@@ -447,6 +410,9 @@ process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error)
 })
 
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Promise rejeitada:", reason)
+})
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
 })
