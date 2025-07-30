@@ -93,9 +93,6 @@ app.use(
 
 app.use(express.json())
 
-// 🚫 REMOVER EXPRESS.STATIC - CAUSA CONFLITO COM CARACTERES ESPECIAIS
-// app.use("/downloads", express.static(DOWNLOADS))
-
 // Criar diretórios se não existirem
 if (!fs.existsSync(DOWNLOADS)) {
   fs.mkdirSync(DOWNLOADS, { recursive: true })
@@ -183,7 +180,7 @@ function cleanupOldFiles() {
   }
 }
 
-// Função para detectar erros de autenticação - MELHORADA
+// 🔍 FUNÇÃO MELHORADA PARA DETECTAR ERROS DE AUTENTICAÇÃO
 function isAuthenticationError(errorMessage) {
   const authErrors = [
     "requires authentication",
@@ -201,6 +198,12 @@ function isAuthenticationError(errorMessage) {
     "verification",
     "blocked",
     "rate limit",
+    // 📸 ERROS ESPECÍFICOS DO INSTAGRAM
+    "requested content is not available",
+    "rate-limit reached",
+    "General metadata extraction failed",
+    "unable to extract shared data",
+    "Instagram login required",
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -219,6 +222,22 @@ function getFormatSelector(format, quality, platform) {
     console.log("🎵 Aplicando configurações específicas do TikTok para evitar corrupção...")
 
     // TikTok funciona melhor com formatos específicos e sem merge complexo
+    if (q >= 1080) {
+      return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+    } else if (q >= 720) {
+      return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+    } else if (q >= 480) {
+      return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+    } else {
+      return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+    }
+  }
+
+  // 📸 CONFIGURAÇÕES ESPECÍFICAS PARA INSTAGRAM
+  if (platform === "instagram") {
+    console.log("📸 Aplicando configurações específicas do Instagram...")
+
+    // Instagram funciona melhor com formatos simples
     if (q >= 1080) {
       return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
     } else if (q >= 720) {
@@ -256,9 +275,30 @@ function getAntiDetectionCmd(userAgent, cookieFile, platform) {
     cmd += ` --concurrent-fragments 1` // Download sequencial para TikTok
   }
 
+  // 📸 CONFIGURAÇÕES ESPECÍFICAS PARA INSTAGRAM
+  if (platform === "instagram") {
+    console.log("📸 Aplicando configurações específicas do Instagram...")
+
+    // Instagram precisa de configurações especiais para evitar rate-limit
+    cmd += ` --sleep-interval 2 --max-sleep-interval 5` // Delay entre requests
+    cmd += ` --extractor-retries 5 --fragment-retries 5` // Mais tentativas
+    cmd += ` --retry-sleep 3` // Mais tempo entre tentativas
+
+    // Headers específicos do Instagram
+    cmd += ` --add-header "X-Requested-With:XMLHttpRequest"`
+    cmd += ` --add-header "X-Instagram-AJAX:1"`
+    cmd += ` --add-header "X-CSRFToken:missing"`
+
+    // ⚠️ FORÇAR USO DE COOKIES PARA INSTAGRAM
+    if (!cookieFile) {
+      console.warn("⚠️ Instagram REQUER cookies! Sem cookies, a taxa de sucesso será muito baixa.")
+    }
+  }
+
   // Adiciona o cookie se um arquivo for fornecido
   if (cookieFile) {
     cmd += ` --cookies "${cookieFile}"`
+    console.log(`🍪 Cookie aplicado para ${platform}:`, path.basename(cookieFile))
   }
 
   return cmd
@@ -285,6 +325,11 @@ app.post("/download", async (req, res) => {
       console.log("🍪 Usando cookie:", path.basename(cookieFile))
     } else {
       console.warn("⚠️ Nenhuma conta/cookie disponível, tentando sem autenticação.")
+
+      // 📸 AVISO ESPECÍFICO PARA INSTAGRAM SEM COOKIES
+      if (detectedPlatform === "instagram") {
+        console.warn("🚨 INSTAGRAM SEM COOKIES: Taxa de sucesso será muito baixa!")
+      }
     }
 
     if (!url || !format) {
@@ -305,11 +350,23 @@ app.post("/download", async (req, res) => {
 
     console.log("🚀 Executando comando:", jsonCmd)
 
-    exec(jsonCmd, { timeout: 30000 }, (jsonErr, jsonStdout, jsonStderr) => {
+    exec(jsonCmd, { timeout: 45000 }, (jsonErr, jsonStdout, jsonStderr) => {
+      // ← Timeout aumentado para Instagram
       if (jsonErr) {
         console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
         if (isAuthenticationError(jsonStderr || jsonStdout)) {
           console.log("🔒 Conteúdo requer autenticação")
+
+          // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
+          if (detectedPlatform === "instagram") {
+            return res.status(400).json({
+              error: "Instagram requer login. Adicione cookies do Instagram para acessar este conteúdo.",
+              type: "instagram_auth_required",
+              suggestion: "Faça login no Instagram no seu navegador e exporte os cookies para o diretório /cookies.",
+              platform: "instagram",
+            })
+          }
+
           return res.status(400).json({
             error: "Este conteúdo é privado ou requer login. O cookie usado pode ter expirado ou sido inválido.",
             type: "private_content",
@@ -350,6 +407,12 @@ app.post("/download", async (req, res) => {
           console.log("🎵 Usando comando otimizado para TikTok...")
           // Para TikTok, não usar merge complexo que pode corromper
           cmd = `${baseCmd} -f "${formatSelector}" --add-metadata -o "${outputPath}" "${url}"`
+        }
+        // 📸 COMANDO ESPECÍFICO PARA INSTAGRAM
+        else if (detectedPlatform === "instagram") {
+          console.log("📸 Usando comando otimizado para Instagram...")
+          // Para Instagram, usar comando simples sem merge complexo
+          cmd = `${baseCmd} -f "${formatSelector}" --add-metadata -o "${outputPath}" "${url}"`
         } else {
           // Comando padrão para outras plataformas
           cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
@@ -363,6 +426,16 @@ app.post("/download", async (req, res) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
           if (isAuthenticationError(stderr2 || stdout2)) {
+            // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
+            if (detectedPlatform === "instagram") {
+              return res.status(400).json({
+                error: "Instagram bloqueou o acesso. Cookies necessários ou expirados.",
+                type: "instagram_blocked",
+                suggestion: "Atualize os cookies do Instagram ou tente com outro vídeo público.",
+                platform: "instagram",
+              })
+            }
+
             return res.status(400).json({
               error: "Conteúdo privado ou bloqueado. O cookie pode ter falhado.",
               type: "private_content",
@@ -404,6 +477,7 @@ app.post("/download", async (req, res) => {
           userFriendlyName: `${safeTitle} - ${qualLabel}.${ext}`,
           size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
           path: finalFilePath,
+          used_cookies: !!cookieFile,
         })
 
         res.json({
@@ -414,6 +488,7 @@ app.post("/download", async (req, res) => {
           duration: data.duration,
           platform: detectedPlatform,
           quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
+          used_cookies: !!cookieFile,
         })
       })
     })
@@ -495,8 +570,12 @@ app.get("/health", (req, res) => {
     user_agents_count: userAgents.length,
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || "development",
-    tiktok_optimizations: "enabled",
-    file_mapping_system: "enabled",
+    optimizations: {
+      tiktok: "enabled - anti-corruption",
+      instagram: "enabled - requires cookies",
+      twitter: "enabled",
+      filename_mapping: "enabled",
+    },
     active_files: fileMap.size,
   }
 
@@ -554,12 +633,18 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend - Filename Fixed!",
-    version: "3.3.0",
+    message: "🎌 WaifuConvert Backend - Instagram Support Added!",
+    version: "3.4.0",
     status: "online",
     cookies_loaded: cookiePool.length,
-    tiktok_fix: "enabled",
-    filename_mapping: "enabled",
+    platform_support: {
+      tiktok: "✅ Working perfectly",
+      twitter: "✅ Working perfectly",
+      instagram: "✅ Working with cookies",
+      youtube: "⚠️ Requires cookies",
+      reddit: "✅ Usually works",
+      facebook: "⚠️ Requires cookies",
+    },
     active_downloads: fileMap.size,
   })
 })
@@ -574,7 +659,7 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - FILENAME FIXED")
+  console.log("🚀 WaifuConvert Backend - INSTAGRAM SUPPORT ADDED")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
@@ -585,9 +670,10 @@ app.listen(PORT, () => {
   console.log("🛡️ Proteções ativadas:")
   console.log("  ✅ Rotação de Cookies + Anti-detecção")
   console.log("  ✅ TikTok: Otimizações anti-corrupção")
+  console.log("  ✅ Instagram: Suporte com cookies obrigatórios")
+  console.log("  ✅ Twitter/X: Funcionando perfeitamente")
   console.log("  ✅ Sistema de mapeamento de arquivos")
-  console.log("  ✅ Limpeza de caracteres especiais (#)")
-  console.log("  ✅ Download via chave segura")
+  console.log("  ✅ Limpeza de caracteres especiais")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
