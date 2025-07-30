@@ -1,7 +1,7 @@
 {
   "name": "waifuconvert-backend",
-  "version": "1.0.0",
-  "description": "WaifuConvert Backend",
+  "version": "2.0.0",
+  "description": "WaifuConvert Backend - Railway Optimized",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -9,14 +9,15 @@
     "build": "echo 'Build completed'",
     "start": "node index.js",
     "lint": "echo 'No linting configured'",
-    "test": "node index.js"
+    "test": "node --version && python3 --version && yt-dlp --version",
+    "health": "curl -f http://localhost:8080/health || exit 1"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.0.0"
   },
   "keywords": [
     "video-converter",
@@ -24,9 +25,9 @@
     "mp3-converter",
     "mp4-converter",
     "yt-dlp",
-    "waifuconvert"
+    "waifuconvert",
+    "railway"
   ],
   "author": "WaifuConvert",
   "license": "MIT"
 }
-</merged_code>
