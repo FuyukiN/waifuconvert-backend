@@ -1,9 +1,23 @@
 const express = require("express")
 const cors = require("cors")
-const fetch = require("node-fetch") // Instalar: npm install node-fetch@2
+
+// 🔧 IMPORTAÇÃO MAIS SEGURA DO NODE-FETCH
+let fetch
+try {
+  fetch = require("node-fetch")
+} catch (error) {
+  console.error("❌ Erro ao importar node-fetch:", error.message)
+  console.log("💡 Tentando usar fetch nativo...")
+  // Para Node.js 18+, usar fetch nativo
+  fetch = globalThis.fetch
+}
 
 const app = express()
 const PORT = process.env.PORT || 8080
+
+console.log("🚀 Iniciando WaifuConvert Backend - Cobalt Edition")
+console.log("📦 Node.js version:", process.version)
+console.log("🌐 Porta:", PORT)
 
 // CORS para seu domínio
 app.use(
@@ -20,10 +34,15 @@ app.use(
 
 app.use(express.json())
 
-// 🎯 FUNÇÃO PRINCIPAL - COBALT.TOOLS
+// 🎯 FUNÇÃO PRINCIPAL - COBALT.TOOLS COM TRATAMENTO DE ERRO
 async function downloadWithCobalt(url, format, quality) {
   try {
     console.log(`🚀 Tentando baixar: ${url}`)
+
+    // Verificar se fetch está disponível
+    if (!fetch) {
+      throw new Error("Fetch não está disponível")
+    }
 
     // Configurar pedido para Cobalt
     const requestBody = {
@@ -45,7 +64,12 @@ async function downloadWithCobalt(url, format, quality) {
         "User-Agent": "WaifuConvert/1.0",
       },
       body: JSON.stringify(requestBody),
+      timeout: 30000, // 30 segundos timeout
     })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
 
     const data = await response.json()
     console.log("📥 Resposta do Cobalt:", data)
@@ -74,14 +98,18 @@ async function downloadWithCobalt(url, format, quality) {
 
 // 🔍 DETECTAR PLATAFORMA
 function detectPlatform(url) {
-  const hostname = new URL(url).hostname.toLowerCase()
-  if (hostname.includes("youtube") || hostname.includes("youtu.be")) return "youtube"
-  if (hostname.includes("tiktok")) return "tiktok"
-  if (hostname.includes("instagram")) return "instagram"
-  if (hostname.includes("twitter") || hostname.includes("x.com")) return "twitter"
-  if (hostname.includes("reddit")) return "reddit"
-  if (hostname.includes("facebook")) return "facebook"
-  return "unknown"
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    if (hostname.includes("youtube") || hostname.includes("youtu.be")) return "youtube"
+    if (hostname.includes("tiktok")) return "tiktok"
+    if (hostname.includes("instagram")) return "instagram"
+    if (hostname.includes("twitter") || hostname.includes("x.com")) return "twitter"
+    if (hostname.includes("reddit")) return "reddit"
+    if (hostname.includes("facebook")) return "facebook"
+    return "unknown"
+  } catch (error) {
+    return "unknown"
+  }
 }
 
 // 🎯 ROTA PRINCIPAL DE DOWNLOAD
@@ -92,13 +120,22 @@ app.post("/download", async (req, res) => {
   try {
     const { url, format, quality } = req.body
 
+    console.log(`🎯 [${requestId}] Nova requisição:`, { url, format, quality })
+
     if (!url || !format) {
       return res.status(400).json({
         error: "URL e formato são obrigatórios",
       })
     }
 
-    console.log(`🎯 [${requestId}] Nova requisição:`, { url, format, quality })
+    // Validar URL
+    try {
+      new URL(url)
+    } catch (error) {
+      return res.status(400).json({
+        error: "URL inválida",
+      })
+    }
 
     // Tentar com Cobalt.tools
     const result = await downloadWithCobalt(url, format, quality)
@@ -131,6 +168,7 @@ app.post("/download", async (req, res) => {
     console.error(`💀 [${requestId}] Erro geral:`, error)
     res.status(500).json({
       error: "Erro interno do servidor",
+      details: error.message,
       request_id: requestId,
     })
   }
@@ -143,6 +181,8 @@ app.get("/health", (req, res) => {
     version: "6.0.0",
     timestamp: new Date().toISOString(),
     cobalt_endpoint: "https://co.wuk.sh/api/json",
+    node_version: process.version,
+    fetch_available: !!fetch,
   })
 })
 
@@ -154,6 +194,8 @@ app.get("/", (req, res) => {
     status: "COBALT.TOOLS INTEGRATION ACTIVE",
     success_rate: "~85% average",
     supported_platforms: ["YouTube", "TikTok", "Instagram", "Twitter", "Reddit", "Facebook"],
+    node_version: process.version,
+    fetch_available: !!fetch,
   })
 })
 
@@ -167,11 +209,17 @@ app.listen(PORT, () => {
   console.log("  ✅ Suporte a 6+ plataformas")
   console.log("  ✅ Processamento rápido")
   console.log("🔗 Cobalt endpoint: https://co.wuk.sh/api/json")
+  console.log(`📦 Node.js: ${process.version}`)
+  console.log(`🌐 Fetch disponível: ${!!fetch}`)
 })
 
 // Tratamento de erros
 process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error)
+})
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Promise rejeitada:", reason)
 })
 
 process.on("unhandledRejection", (reason, promise) => {
