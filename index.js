@@ -77,6 +77,81 @@ function detectPlatform(url) {
   }
 }
 
+// 🔍 FUNÇÃO PARA VERIFICAR SE ARQUIVO ESTÁ COMPLETO E VÁLIDO
+async function waitForFileCompletion(filePath, expectedSize, maxWaitTime = 30000) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now()
+
+    const checkFile = () => {
+      try {
+        if (!fs.existsSync(filePath)) {
+          if (Date.now() - startTime > maxWaitTime) {
+            reject(new Error("Arquivo não foi criado no tempo esperado"))
+            return
+          }
+          setTimeout(checkFile, 500)
+          return
+        }
+
+        const stats = fs.statSync(filePath)
+        const currentTime = Date.now()
+
+        // Verificar se arquivo tem tamanho adequado
+        if (stats.size < 1000) {
+          if (currentTime - startTime > maxWaitTime) {
+            reject(new Error("Arquivo muito pequeno após timeout"))
+            return
+          }
+          setTimeout(checkFile, 500)
+          return
+        }
+
+        // Verificar se arquivo parou de crescer (está completo)
+        setTimeout(() => {
+          try {
+            const newStats = fs.statSync(filePath)
+            if (newStats.size === stats.size && newStats.mtime.getTime() === stats.mtime.getTime()) {
+              // Arquivo estável, provavelmente completo
+              console.log(
+                `✅ Arquivo estável detectado: ${path.basename(filePath)} (${(newStats.size / 1024 / 1024).toFixed(2)} MB)`,
+              )
+              resolve({
+                path: filePath,
+                size: newStats.size,
+                stable: true,
+              })
+            } else {
+              // Arquivo ainda está sendo escrito
+              if (currentTime - startTime > maxWaitTime) {
+                console.log(
+                  `⚠️ Timeout atingido, mas arquivo existe: ${path.basename(filePath)} (${(newStats.size / 1024 / 1024).toFixed(2)} MB)`,
+                )
+                resolve({
+                  path: filePath,
+                  size: newStats.size,
+                  stable: false,
+                })
+              } else {
+                setTimeout(checkFile, 1000)
+              }
+            }
+          } catch (error) {
+            reject(error)
+          }
+        }, 1000)
+      } catch (error) {
+        if (Date.now() - startTime > maxWaitTime) {
+          reject(error)
+        } else {
+          setTimeout(checkFile, 500)
+        }
+      }
+    }
+
+    checkFile()
+  })
+}
+
 // 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
@@ -342,7 +417,7 @@ app.post("/download", async (req, res) => {
       console.log("🚀 Iniciando download/conversão...")
       console.log("📝 Plataforma detectada:", detectedPlatform)
 
-      exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
+      exec(cmd, { timeout: 600000 }, async (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
           if (isAuthenticationError(stderr2 || stdout2)) {
@@ -354,39 +429,50 @@ app.post("/download", async (req, res) => {
           return res.status(500).json({ error: "Falha no download/conversão" })
         }
 
-        let finalFilePath = outputPath
-        if (!fs.existsSync(finalFilePath)) {
-          finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
-          if (!finalFilePath) {
-            return res.status(500).json({ error: "Arquivo não foi criado" })
+        try {
+          // 🔍 AGUARDAR ARQUIVO ESTAR COMPLETO ANTES DE RESPONDER
+          console.log("⏳ Aguardando arquivo estar completo...")
+
+          let finalFilePath = outputPath
+          if (!fs.existsSync(finalFilePath)) {
+            finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
+            if (!finalFilePath) {
+              return res.status(500).json({ error: "Arquivo não foi criado" })
+            }
           }
+
+          // Aguardar arquivo estar estável
+          const fileInfo = await waitForFileCompletion(finalFilePath, 0, 30000)
+
+          const filename = path.basename(fileInfo.path)
+          const userFriendlyName = `${safeTitle} - ${qualLabel}.${ext}`
+
+          if (fileInfo.size < 1000) {
+            return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
+          }
+
+          console.log("✅ Download concluído:", {
+            platform: detectedPlatform,
+            filename: filename,
+            userFriendlyName: userFriendlyName,
+            size: `${(fileInfo.size / 1024 / 1024).toFixed(2)} MB`,
+            path: fileInfo.path,
+            stable: fileInfo.stable,
+          })
+
+          res.json({
+            file: `/downloads/${filename}`,
+            filename: userFriendlyName,
+            size: fileInfo.size,
+            title: data.title,
+            duration: data.duration,
+            platform: detectedPlatform,
+            quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
+          })
+        } catch (waitError) {
+          console.error("❌ Erro ao aguardar arquivo:", waitError)
+          return res.status(500).json({ error: "Erro ao finalizar arquivo" })
         }
-
-        const filename = path.basename(finalFilePath)
-        const userFriendlyName = `${safeTitle} - ${qualLabel}.${ext}`
-        const fileSize = fs.statSync(finalFilePath).size
-
-        if (fileSize < 1000) {
-          return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
-        }
-
-        console.log("✅ Download concluído:", {
-          platform: detectedPlatform,
-          filename: filename,
-          userFriendlyName: userFriendlyName,
-          size: `${(fileSize / 1024 / 1024).toFixed(2)} MB`,
-          path: finalFilePath,
-        })
-
-        res.json({
-          file: `/downloads/${filename}`,
-          filename: userFriendlyName,
-          size: fileSize,
-          title: data.title,
-          duration: data.duration,
-          platform: detectedPlatform,
-          quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-        })
       })
     })
   } catch (e) {
@@ -395,28 +481,55 @@ app.post("/download", async (req, res) => {
   }
 })
 
-// Rota de download (força "salvar como")
-app.get("/downloads/:file", (req, res) => {
+// 📥 ROTA DE DOWNLOAD MELHORADA (CORRIGE PROBLEMA DE 1KB)
+app.get("/downloads/:file", async (req, res) => {
   const filePath = path.join(DOWNLOADS, req.params.file)
 
   console.log("📥 Solicitação de download:", req.params.file)
 
-  if (fs.existsSync(filePath)) {
-    const stats = fs.statSync(filePath)
+  try {
+    // Verificar se arquivo existe
+    if (!fs.existsSync(filePath)) {
+      console.error("❌ Arquivo não encontrado:", filePath)
+      return res.status(404).json({ error: "Arquivo não encontrado" })
+    }
+
+    // Aguardar arquivo estar estável antes de servir
+    console.log("⏳ Verificando estabilidade do arquivo...")
+    const fileInfo = await waitForFileCompletion(filePath, 0, 10000)
+
+    if (fileInfo.size < 1000) {
+      console.error("❌ Arquivo muito pequeno:", fileInfo.size, "bytes")
+      return res.status(404).json({ error: "Arquivo corrompido ou incompleto" })
+    }
 
     // Headers otimizados para forçar download
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(req.params.file)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
-    res.setHeader("Content-Length", stats.size)
+    res.setHeader("Content-Length", fileInfo.size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
     res.setHeader("Pragma", "no-cache")
     res.setHeader("Expires", "0")
+    res.setHeader("Accept-Ranges", "bytes")
 
-    console.log("✅ Enviando arquivo:", req.params.file, `(${(stats.size / 1024 / 1024).toFixed(2)} MB)`)
-    res.sendFile(filePath)
-  } else {
-    console.error("❌ Arquivo não encontrado:", filePath)
-    res.status(404).json({ error: "Arquivo não encontrado" })
+    console.log("✅ Enviando arquivo:", req.params.file, `(${(fileInfo.size / 1024 / 1024).toFixed(2)} MB)`)
+
+    // Usar stream para arquivos grandes
+    const fileStream = fs.createReadStream(fileInfo.path)
+
+    fileStream.on("error", (error) => {
+      console.error("❌ Erro ao ler arquivo:", error)
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Erro ao ler arquivo" })
+      }
+    })
+
+    fileStream.pipe(res)
+  } catch (error) {
+    console.error("❌ Erro na rota de download:", error)
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Erro interno do servidor" })
+    }
   }
 })
 
@@ -434,6 +547,7 @@ app.get("/health", (req, res) => {
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || "development",
     tiktok_optimizations: "enabled",
+    file_stability_check: "enabled",
   }
 
   // Verificar se yt-dlp existe
@@ -480,11 +594,12 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend - TikTok Fixed Edition!",
-    version: "3.1.0",
+    message: "🎌 WaifuConvert Backend - File Stability Fixed!",
+    version: "3.2.0",
     status: "online",
     cookies_loaded: cookiePool.length,
     tiktok_fix: "enabled",
+    file_stability_check: "enabled",
   })
 })
 
@@ -498,7 +613,7 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - TIKTOK FIXED EDITION")
+  console.log("🚀 WaifuConvert Backend - FILE STABILITY FIXED")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
@@ -506,8 +621,11 @@ app.listen(PORT, () => {
   // Carrega os cookies na inicialização
   loadCookiePool()
 
-  console.log("🛡️ Proteções ativadas: Rotação de Cookies + Anti-detecção + TikTok Fix")
-  console.log("🎵 TikTok: Otimizações anti-corrupção ativadas")
+  console.log("🛡️ Proteções ativadas:")
+  console.log("  ✅ Rotação de Cookies + Anti-detecção")
+  console.log("  ✅ TikTok: Otimizações anti-corrupção")
+  console.log("  ✅ Verificação de estabilidade de arquivo")
+  console.log("  ✅ Stream de download melhorado")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
