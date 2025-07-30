@@ -1,7 +1,7 @@
 {
   "name": "waifuconvert-backend",
   "version": "1.0.0",
-  "description": "WaifuConvert Backend - Gothic Anime Video Converter API",
+  "description": "WaifuConvert Backend",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -18,7 +18,15 @@
   "engines": {
     "node": "18.x"
   },
-  "keywords": ["video-converter", "youtube-downloader", "mp3-converter", "mp4-converter", "yt-dlp", "waifuconvert"],
+  "keywords": [
+    "video-converter",
+    "youtube-downloader",
+    "mp3-converter",
+    "mp4-converter",
+    "yt-dlp",
+    "waifuconvert"
+  ],
   "author": "WaifuConvert",
   "license": "MIT"
 }
+</merged_code>
