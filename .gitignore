@@ -137,3 +137,14 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Downloads e arquivos temporários
+downloads/
+temp/
+
+# Executáveis Windows (não funcionam no Linux)
+yt-dlp.exe
+*.exe
+
+# Arquivos específicos do projeto
+railway.toml.backup
