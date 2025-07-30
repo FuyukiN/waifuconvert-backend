@@ -6,10 +6,14 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar yt-dlp via pip (funciona no Linux)
-RUN pip3 install --break-system-packages yt-dlp
+# Atualizar pip primeiro
+RUN python3 -m pip install --upgrade pip
+
+# Instalar yt-dlp (sem a flag --break-system-packages)
+RUN pip3 install yt-dlp
 
 # Verificar se foi instalado
 RUN yt-dlp --version
@@ -34,3 +38,4 @@ EXPOSE 8080
 
 # Comando para iniciar
 CMD ["npm", "start"]
+
