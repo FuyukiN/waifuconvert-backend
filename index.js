@@ -77,81 +77,6 @@ function detectPlatform(url) {
   }
 }
 
-// 🔍 FUNÇÃO PARA VERIFICAR SE ARQUIVO ESTÁ COMPLETO E VÁLIDO
-async function waitForFileCompletion(filePath, expectedSize, maxWaitTime = 30000) {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now()
-
-    const checkFile = () => {
-      try {
-        if (!fs.existsSync(filePath)) {
-          if (Date.now() - startTime > maxWaitTime) {
-            reject(new Error("Arquivo não foi criado no tempo esperado"))
-            return
-          }
-          setTimeout(checkFile, 500)
-          return
-        }
-
-        const stats = fs.statSync(filePath)
-        const currentTime = Date.now()
-
-        // Verificar se arquivo tem tamanho adequado
-        if (stats.size < 1000) {
-          if (currentTime - startTime > maxWaitTime) {
-            reject(new Error("Arquivo muito pequeno após timeout"))
-            return
-          }
-          setTimeout(checkFile, 500)
-          return
-        }
-
-        // Verificar se arquivo parou de crescer (está completo)
-        setTimeout(() => {
-          try {
-            const newStats = fs.statSync(filePath)
-            if (newStats.size === stats.size && newStats.mtime.getTime() === stats.mtime.getTime()) {
-              // Arquivo estável, provavelmente completo
-              console.log(
-                `✅ Arquivo estável detectado: ${path.basename(filePath)} (${(newStats.size / 1024 / 1024).toFixed(2)} MB)`,
-              )
-              resolve({
-                path: filePath,
-                size: newStats.size,
-                stable: true,
-              })
-            } else {
-              // Arquivo ainda está sendo escrito
-              if (currentTime - startTime > maxWaitTime) {
-                console.log(
-                  `⚠️ Timeout atingido, mas arquivo existe: ${path.basename(filePath)} (${(newStats.size / 1024 / 1024).toFixed(2)} MB)`,
-                )
-                resolve({
-                  path: filePath,
-                  size: newStats.size,
-                  stable: false,
-                })
-              } else {
-                setTimeout(checkFile, 1000)
-              }
-            }
-          } catch (error) {
-            reject(error)
-          }
-        }, 1000)
-      } catch (error) {
-        if (Date.now() - startTime > maxWaitTime) {
-          reject(error)
-        } else {
-          setTimeout(checkFile, 500)
-        }
-      }
-    }
-
-    checkFile()
-  })
-}
-
 // 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
@@ -167,7 +92,9 @@ app.use(
 )
 
 app.use(express.json())
-app.use("/downloads", express.static(DOWNLOADS))
+
+// 🚫 REMOVER EXPRESS.STATIC - CAUSA CONFLITO COM CARACTERES ESPECIAIS
+// app.use("/downloads", express.static(DOWNLOADS))
 
 // Criar diretórios se não existirem
 if (!fs.existsSync(DOWNLOADS)) {
@@ -185,15 +112,19 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// Limpa nome de arquivos de caracteres problemáticos
+// 🔧 FUNÇÃO MELHORADA PARA LIMPAR NOMES DE ARQUIVO
 function safeFilename(str) {
   return (str || "WaifuConvert")
-    .replace(/[\\/:*?"<>|]/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/[^\x00-\x7F]/g, "") // Remove caracteres não-ASCII
+    .replace(/[\\/:*?"<>|#]/g, "") // ← ADICIONADO # na lista de caracteres proibidos
+    .replace(/\s+/g, "_") // ← TROCAR ESPAÇOS POR UNDERSCORE
+    .replace(/[^\w\-_.()]/g, "") // ← MANTER APENAS CARACTERES SEGUROS
+    .replace(/_{2,}/g, "_") // ← REMOVER UNDERSCORES DUPLOS
     .trim()
-    .substring(0, 80) // Reduzir tamanho
+    .substring(0, 60) // ← REDUZIR MAIS O TAMANHO
 }
+
+// 📁 MAPA PARA RASTREAR ARQUIVOS CRIADOS
+const fileMap = new Map()
 
 // Função para encontrar arquivo criado recentemente
 function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
@@ -237,6 +168,14 @@ function cleanupOldFiles() {
       if (stats.mtime.getTime() < oneHourAgo) {
         fs.unlinkSync(filePath)
         console.log("🗑️ Arquivo antigo removido:", file)
+
+        // Remover do mapa também
+        for (const [key, value] of fileMap.entries()) {
+          if (value.actualPath === filePath) {
+            fileMap.delete(key)
+            break
+          }
+        }
       }
     })
   } catch (error) {
@@ -395,6 +334,9 @@ app.post("/download", async (req, res) => {
       const outputFilename = `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
       const outputPath = path.join(DOWNLOADS, outputFilename)
 
+      console.log("📁 Nome do arquivo limpo:", outputFilename)
+      console.log("📁 Caminho completo:", outputPath)
+
       let cmd
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
@@ -417,7 +359,7 @@ app.post("/download", async (req, res) => {
       console.log("🚀 Iniciando download/conversão...")
       console.log("📝 Plataforma detectada:", detectedPlatform)
 
-      exec(cmd, { timeout: 600000 }, async (error, stdout2, stderr2) => {
+      exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
           if (isAuthenticationError(stderr2 || stdout2)) {
@@ -429,50 +371,50 @@ app.post("/download", async (req, res) => {
           return res.status(500).json({ error: "Falha no download/conversão" })
         }
 
-        try {
-          // 🔍 AGUARDAR ARQUIVO ESTAR COMPLETO ANTES DE RESPONDER
-          console.log("⏳ Aguardando arquivo estar completo...")
-
-          let finalFilePath = outputPath
-          if (!fs.existsSync(finalFilePath)) {
-            finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
-            if (!finalFilePath) {
-              return res.status(500).json({ error: "Arquivo não foi criado" })
-            }
+        // 🔍 VERIFICAR ARQUIVO CRIADO
+        let finalFilePath = outputPath
+        if (!fs.existsSync(finalFilePath)) {
+          finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
+          if (!finalFilePath) {
+            return res.status(500).json({ error: "Arquivo não foi criado" })
           }
-
-          // Aguardar arquivo estar estável
-          const fileInfo = await waitForFileCompletion(finalFilePath, 0, 30000)
-
-          const filename = path.basename(fileInfo.path)
-          const userFriendlyName = `${safeTitle} - ${qualLabel}.${ext}`
-
-          if (fileInfo.size < 1000) {
-            return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
-          }
-
-          console.log("✅ Download concluído:", {
-            platform: detectedPlatform,
-            filename: filename,
-            userFriendlyName: userFriendlyName,
-            size: `${(fileInfo.size / 1024 / 1024).toFixed(2)} MB`,
-            path: fileInfo.path,
-            stable: fileInfo.stable,
-          })
-
-          res.json({
-            file: `/downloads/${filename}`,
-            filename: userFriendlyName,
-            size: fileInfo.size,
-            title: data.title,
-            duration: data.duration,
-            platform: detectedPlatform,
-            quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-          })
-        } catch (waitError) {
-          console.error("❌ Erro ao aguardar arquivo:", waitError)
-          return res.status(500).json({ error: "Erro ao finalizar arquivo" })
         }
+
+        const actualFilename = path.basename(finalFilePath)
+        const stats = fs.statSync(finalFilePath)
+
+        if (stats.size < 1000) {
+          return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
+        }
+
+        // 📁 MAPEAR ARQUIVO PARA DOWNLOAD SEGURO
+        const downloadKey = `download_${uniqueId}.${ext}`
+        fileMap.set(downloadKey, {
+          actualPath: finalFilePath,
+          actualFilename: actualFilename,
+          userFriendlyName: `${safeTitle} - ${qualLabel}.${ext}`,
+          size: stats.size,
+          created: Date.now(),
+        })
+
+        console.log("✅ Download concluído:", {
+          platform: detectedPlatform,
+          downloadKey: downloadKey,
+          actualFilename: actualFilename,
+          userFriendlyName: `${safeTitle} - ${qualLabel}.${ext}`,
+          size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
+          path: finalFilePath,
+        })
+
+        res.json({
+          file: `/downloads/${downloadKey}`, // ← USAR CHAVE SEGURA
+          filename: `${safeTitle} - ${qualLabel}.${ext}`,
+          size: stats.size,
+          title: data.title,
+          duration: data.duration,
+          platform: detectedPlatform,
+          quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
+        })
       })
     })
   } catch (e) {
@@ -481,47 +423,54 @@ app.post("/download", async (req, res) => {
   }
 })
 
-// 📥 ROTA DE DOWNLOAD MELHORADA (CORRIGE PROBLEMA DE 1KB)
-app.get("/downloads/:file", async (req, res) => {
-  const filePath = path.join(DOWNLOADS, req.params.file)
+// 📥 ROTA DE DOWNLOAD COMPLETAMENTE REESCRITA
+app.get("/downloads/:fileKey", (req, res) => {
+  const fileKey = req.params.fileKey
 
-  console.log("📥 Solicitação de download:", req.params.file)
+  console.log("📥 Solicitação de download:", fileKey)
+
+  // 🔍 BUSCAR NO MAPA DE ARQUIVOS
+  const fileInfo = fileMap.get(fileKey)
+
+  if (!fileInfo) {
+    console.error("❌ Chave de arquivo não encontrada:", fileKey)
+    return res.status(404).json({ error: "Arquivo não encontrado ou expirado" })
+  }
+
+  const { actualPath, userFriendlyName, size } = fileInfo
+
+  // Verificar se arquivo ainda existe no disco
+  if (!fs.existsSync(actualPath)) {
+    console.error("❌ Arquivo físico não encontrado:", actualPath)
+    fileMap.delete(fileKey) // Limpar do mapa
+    return res.status(404).json({ error: "Arquivo não encontrado no disco" })
+  }
 
   try {
-    // Verificar se arquivo existe
-    if (!fs.existsSync(filePath)) {
-      console.error("❌ Arquivo não encontrado:", filePath)
-      return res.status(404).json({ error: "Arquivo não encontrado" })
-    }
-
-    // Aguardar arquivo estar estável antes de servir
-    console.log("⏳ Verificando estabilidade do arquivo...")
-    const fileInfo = await waitForFileCompletion(filePath, 0, 10000)
-
-    if (fileInfo.size < 1000) {
-      console.error("❌ Arquivo muito pequeno:", fileInfo.size, "bytes")
-      return res.status(404).json({ error: "Arquivo corrompido ou incompleto" })
-    }
-
     // Headers otimizados para forçar download
-    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(req.params.file)}"`)
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
-    res.setHeader("Content-Length", fileInfo.size)
+    res.setHeader("Content-Length", size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
     res.setHeader("Pragma", "no-cache")
     res.setHeader("Expires", "0")
     res.setHeader("Accept-Ranges", "bytes")
 
-    console.log("✅ Enviando arquivo:", req.params.file, `(${(fileInfo.size / 1024 / 1024).toFixed(2)} MB)`)
+    console.log("✅ Enviando arquivo:", userFriendlyName, `(${(size / 1024 / 1024).toFixed(2)} MB)`)
+    console.log("📁 Caminho real:", actualPath)
 
     // Usar stream para arquivos grandes
-    const fileStream = fs.createReadStream(fileInfo.path)
+    const fileStream = fs.createReadStream(actualPath)
 
     fileStream.on("error", (error) => {
       console.error("❌ Erro ao ler arquivo:", error)
       if (!res.headersSent) {
         res.status(500).json({ error: "Erro ao ler arquivo" })
       }
+    })
+
+    fileStream.on("end", () => {
+      console.log("✅ Download concluído com sucesso:", userFriendlyName)
     })
 
     fileStream.pipe(res)
@@ -547,7 +496,8 @@ app.get("/health", (req, res) => {
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || "development",
     tiktok_optimizations: "enabled",
-    file_stability_check: "enabled",
+    file_mapping_system: "enabled",
+    active_files: fileMap.size,
   }
 
   // Verificar se yt-dlp existe
@@ -559,7 +509,7 @@ app.get("/health", (req, res) => {
 // Rota para listar arquivos (debug)
 app.get("/files", (req, res) => {
   try {
-    const files = fs.readdirSync(DOWNLOADS).map((file) => {
+    const diskFiles = fs.readdirSync(DOWNLOADS).map((file) => {
       const filePath = path.join(DOWNLOADS, file)
       const stats = fs.statSync(filePath)
       return {
@@ -572,10 +522,20 @@ app.get("/files", (req, res) => {
       }
     })
 
+    const mappedFiles = Array.from(fileMap.entries()).map(([key, info]) => ({
+      key,
+      userFriendlyName: info.userFriendlyName,
+      actualFilename: info.actualFilename,
+      size_mb: (info.size / 1024 / 1024).toFixed(2),
+      age_minutes: Math.floor((Date.now() - info.created) / 60000),
+    }))
+
     res.json({
-      files,
-      total_files: files.length,
-      total_size_mb: files.reduce((sum, f) => sum + Number.parseFloat(f.size_mb), 0).toFixed(2),
+      disk_files: diskFiles,
+      mapped_files: mappedFiles,
+      total_disk_files: diskFiles.length,
+      total_mapped_files: mappedFiles.length,
+      total_size_mb: diskFiles.reduce((sum, f) => sum + Number.parseFloat(f.size_mb), 0).toFixed(2),
     })
   } catch (error) {
     res.status(500).json({ error: error.message })
@@ -594,12 +554,13 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend - File Stability Fixed!",
-    version: "3.2.0",
+    message: "🎌 WaifuConvert Backend - Filename Fixed!",
+    version: "3.3.0",
     status: "online",
     cookies_loaded: cookiePool.length,
     tiktok_fix: "enabled",
-    file_stability_check: "enabled",
+    filename_mapping: "enabled",
+    active_downloads: fileMap.size,
   })
 })
 
@@ -613,7 +574,7 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - FILE STABILITY FIXED")
+  console.log("🚀 WaifuConvert Backend - FILENAME FIXED")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
@@ -624,8 +585,9 @@ app.listen(PORT, () => {
   console.log("🛡️ Proteções ativadas:")
   console.log("  ✅ Rotação de Cookies + Anti-detecção")
   console.log("  ✅ TikTok: Otimizações anti-corrupção")
-  console.log("  ✅ Verificação de estabilidade de arquivo")
-  console.log("  ✅ Stream de download melhorado")
+  console.log("  ✅ Sistema de mapeamento de arquivos")
+  console.log("  ✅ Limpeza de caracteres especiais (#)")
+  console.log("  ✅ Download via chave segura")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
