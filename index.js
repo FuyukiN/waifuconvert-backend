@@ -10,9 +10,11 @@ const app = express()
 const PORT = process.env.PORT || 8080
 
 const DOWNLOADS = path.join(__dirname, "downloads")
+// 🍪 NOVO DIRETÓRIO PARA OS COOKIES
+const COOKIES_DIR = path.join(__dirname, "cookies")
 
 // 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
-const ytDlpPath = "yt-dlp" // Sempre usar comando global no Railway
+const ytDlpPath = "yt-dlp"
 
 // User-Agents rotativos para evitar bloqueios - ATUALIZADOS
 const userAgents = [
@@ -24,15 +26,50 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
+// 🍪 CARREGAR E GERENCIAR O POOL DE COOKIES
+let cookiePool = []
+let currentCookieIndex = 0
+
+function loadCookiePool() {
+  try {
+    if (!fs.existsSync(COOKIES_DIR)) {
+      fs.mkdirSync(COOKIES_DIR, { recursive: true })
+      console.log("📁 Diretório de cookies criado:", COOKIES_DIR)
+      return
+    }
+
+    const files = fs.readdirSync(COOKIES_DIR).filter((file) => file.endsWith(".txt"))
+    cookiePool = files.map((file) => path.join(COOKIES_DIR, file))
+
+    if (cookiePool.length > 0) {
+      console.log(`🍪 ${cookiePool.length} arquivos de cookie carregados com sucesso!`)
+    } else {
+      console.warn("⚠️ Nenhum arquivo de cookie (.txt) encontrado no diretório /cookies.")
+    }
+  } catch (error) {
+    console.error("❌ Erro ao carregar pool de cookies:", error)
+  }
+}
+
+// Função para obter o próximo cookie do pool (rotação)
+function getNextCookie() {
+  if (cookiePool.length === 0) {
+    return null
+  }
+  const cookieFile = cookiePool[currentCookieIndex]
+  currentCookieIndex = (currentCookieIndex + 1) % cookiePool.length
+  return cookieFile
+}
+
 // 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
     origin: [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://www.waifuconvert.com", // ← SEU DOMÍNIO PRINCIPAL
-      "https://waifuconvert.com", // ← SEU DOMÍNIO SEM WWW
-      "https://waifuconvert.vercel.app", // ← SEU DOMÍNIO VERCEL
+      "https://www.waifuconvert.com",
+      "https://waifuconvert.com",
+      "https://waifuconvert.vercel.app",
     ],
     credentials: true,
   }),
@@ -41,10 +78,15 @@ app.use(
 app.use(express.json())
 app.use("/downloads", express.static(DOWNLOADS))
 
-// Criar diretório se não existir
+// Criar diretórios se não existirem
 if (!fs.existsSync(DOWNLOADS)) {
   fs.mkdirSync(DOWNLOADS, { recursive: true })
   console.log("📁 Diretório downloads criado:", DOWNLOADS)
+}
+
+if (!fs.existsSync(COOKIES_DIR)) {
+  fs.mkdirSync(COOKIES_DIR, { recursive: true })
+  console.log("📁 Diretório cookies criado:", COOKIES_DIR)
 }
 
 // Função para obter User-Agent aleatório
@@ -153,9 +195,16 @@ function getFormatSelector(format, quality) {
   }
 }
 
-// 🛡️ FUNÇÃO PARA COMANDO BASE COM PROTEÇÕES ANTI-DETECÇÃO
-function getAntiDetectionCmd(userAgent) {
-  return `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
+// 🛡️ FUNÇÃO DE COMANDO ATUALIZADA PARA USAR COOKIES
+function getAntiDetectionCmd(userAgent, cookieFile) {
+  let cmd = `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
+
+  // Adiciona o cookie se um arquivo for fornecido
+  if (cookieFile) {
+    cmd += ` --cookies "${cookieFile}"`
+  }
+
+  return cmd
 }
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
@@ -164,29 +213,34 @@ setInterval(cleanupOldFiles, 30 * 60 * 1000)
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   const randomUA = getRandomUserAgent()
+  // 🍪 PEGA O PRÓXIMO COOKIE DA ROTAÇÃO
+  const cookieFile = getNextCookie()
 
   try {
     const { url, format, quality, platform } = req.body
 
     console.log("🎯 Nova requisição:", { url, format, quality, platform })
     console.log("🕵️ User-Agent:", randomUA.substring(0, 50) + "...")
+    if (cookieFile) {
+      console.log("🍪 Usando cookie:", path.basename(cookieFile))
+    } else {
+      console.warn("⚠️ Nenhuma conta/cookie disponível, tentando sem autenticação.")
+    }
 
     if (!url || !format) {
       console.error("❌ Faltando campos no request:", req.body)
       return res.status(400).json({ error: "URL e formato são obrigatórios" })
     }
 
-    // Gera nome único mais simples
     const uniqueId = Date.now() + "-" + Math.floor(Math.random() * 100000)
     const ext = format === "mp3" ? "mp3" : "mp4"
     const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
 
     console.log("📋 Obtendo informações do vídeo...")
 
-    // Comando base com proteções anti-detecção melhoradas
-    const baseCmd = getAntiDetectionCmd(randomUA)
+    // Comando base com proteções e o cookie selecionado
+    const baseCmd = getAntiDetectionCmd(randomUA, cookieFile)
 
-    // Passo 1: Obter informações JSON
     const jsonCmd = `${baseCmd} -j "${url}"`
 
     console.log("🚀 Executando comando:", jsonCmd)
@@ -194,94 +248,59 @@ app.post("/download", async (req, res) => {
     exec(jsonCmd, { timeout: 30000 }, (jsonErr, jsonStdout, jsonStderr) => {
       if (jsonErr) {
         console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
-
-        // Verificar se é erro de autenticação
         if (isAuthenticationError(jsonStderr || jsonStdout)) {
           console.log("🔒 Conteúdo requer autenticação")
           return res.status(400).json({
-            error:
-              "Este conteúdo é privado, requer login ou foi bloqueado por detecção de bot. Tente com um vídeo público diferente.",
+            error: "Este conteúdo é privado ou requer login. O cookie usado pode ter expirado ou sido inválido.",
             type: "private_content",
-            suggestion: "Tente com um vídeo público da mesma plataforma ou de outra plataforma como TikTok.",
+            suggestion: "Verifique se seus arquivos de cookie estão atualizados.",
           })
         }
-
         return res.status(500).json({ error: "Falha ao obter informações do vídeo" })
       }
 
       let data
       try {
         const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
-        if (!jsonLine) {
-          throw new Error("Nenhuma linha JSON encontrada")
-        }
+        if (!jsonLine) throw new Error("Nenhuma linha JSON encontrada")
         data = JSON.parse(jsonLine)
         console.log("✅ Informações obtidas:", data.title)
-        console.log(
-          "📊 Duração:",
-          data.duration
-            ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, "0")}`
-            : "N/A",
-        )
       } catch (e) {
         console.error("❌ Erro ao parsear JSON:", e)
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
-      // Nome de arquivo mais seguro
       const safeTitle = safeFilename(data.title)
       const outputFilename = `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
       const outputPath = path.join(DOWNLOADS, outputFilename)
 
       let cmd
       if (format === "mp3") {
-        console.log("🎵 Configurando conversão para MP3...")
-
         const q = Number.parseInt(quality || "128")
         const formatSelector = getFormatSelector("mp3", quality)
-
         cmd = `${baseCmd} -f "${formatSelector}" --extract-audio --audio-format mp3 --audio-quality ${q}k --add-metadata --embed-thumbnail -o "${outputPath}" "${url}"`
       } else {
-        console.log("🎬 Configurando download para MP4...")
-
         const formatSelector = getFormatSelector("mp4", quality)
-
         cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
       }
 
       console.log("🚀 Iniciando download/conversão...")
-      console.log("📝 Comando completo:", cmd)
-
-      // Passo 2: Fazer o download
       exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
-          console.error("❌ Código de erro:", error.code)
-
-          // Verificar novamente se é erro de autenticação durante download
           if (isAuthenticationError(stderr2 || stdout2)) {
             return res.status(400).json({
-              error: "Conteúdo privado ou bloqueado detectado durante o download. Tente com um vídeo público.",
+              error: "Conteúdo privado ou bloqueado. O cookie pode ter falhado.",
               type: "private_content",
             })
           }
-
           return res.status(500).json({ error: "Falha no download/conversão" })
         }
 
-        console.log("📤 Download concluído")
-
-        // Estratégia 1: Verificar se o arquivo esperado existe
         let finalFilePath = outputPath
-
         if (!fs.existsSync(finalFilePath)) {
-          console.log("🔍 Arquivo esperado não encontrado, procurando arquivos recentes...")
-
-          // Estratégia 2: Procurar arquivo criado recentemente
           finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
-
           if (!finalFilePath) {
-            console.error("❌ Nenhum arquivo encontrado")
             return res.status(500).json({ error: "Arquivo não foi criado" })
           }
         }
@@ -290,20 +309,10 @@ app.post("/download", async (req, res) => {
         const userFriendlyName = `${safeTitle} - ${qualLabel}.${ext}`
         const fileSize = fs.statSync(finalFilePath).size
 
-        // Verificar se o arquivo não está vazio
         if (fileSize < 1000) {
-          console.error("❌ Arquivo muito pequeno, possível erro")
           return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
         }
 
-        console.log("✅ Download concluído:", {
-          filename: filename,
-          userFriendlyName: userFriendlyName,
-          size: `${(fileSize / 1024 / 1024).toFixed(2)} MB`,
-          path: finalFilePath,
-        })
-
-        // Resposta JSON para frontend
         res.json({
           file: `/downloads/${filename}`,
           filename: userFriendlyName,
@@ -312,10 +321,6 @@ app.post("/download", async (req, res) => {
           duration: data.duration,
           quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
         })
-
-        console.log(
-          `[${new Date().toLocaleString()}] ✅ Download pronto: ${userFriendlyName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`,
-        )
       })
     })
   } catch (e) {
@@ -355,6 +360,9 @@ app.get("/health", (req, res) => {
     status: "OK",
     timestamp: new Date().toISOString(),
     downloads_dir: DOWNLOADS,
+    cookies_dir: COOKIES_DIR,
+    cookies_loaded: cookiePool.length,
+    current_cookie_index: currentCookieIndex,
     yt_dlp_path: ytDlpPath,
     user_agents_count: userAgents.length,
     uptime: process.uptime(),
@@ -405,15 +413,10 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend está funcionando!",
-    version: "2.0.0",
+    message: "🎌 WaifuConvert Backend - Cookie Rotation Edition!",
+    version: "3.0.0",
     status: "online",
-    endpoints: {
-      health: "/health",
-      download: "/download (POST)",
-      files: "/files",
-      test_ua: "/test-ua",
-    },
+    cookies_loaded: cookiePool.length,
   })
 })
 
@@ -427,17 +430,15 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend rodando na porta:", PORT)
+  console.log("🚀 WaifuConvert Backend - COOKIE ROTATION EDITION")
+  console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
-  console.log("🛠️ yt-dlp path:", ytDlpPath)
-  console.log("🌐 CORS habilitado para:", [
-    "localhost:3000",
-    "www.waifuconvert.com",
-    "waifuconvert.com",
-    "waifuconvert.vercel.app",
-  ])
-  console.log("🕵️ User-Agents disponíveis:", userAgents.length)
-  console.log("🛡️ Proteções ativadas: Anti-bloqueio + Detecção de conteúdo privado + Anti-detecção")
+  console.log("🍪 Diretório de cookies:", COOKIES_DIR)
+
+  // Carrega os cookies na inicialização
+  loadCookiePool()
+
+  console.log("🛡️ Proteções ativadas: Rotação de Cookies + Anti-detecção")
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
