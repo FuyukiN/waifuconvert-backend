@@ -10,7 +10,7 @@ const app = express()
 const PORT = process.env.PORT || 8080
 
 const DOWNLOADS = path.join(__dirname, "downloads")
-// 🍪 NOVO DIRETÓRIO PARA OS COOKIES
+// 🍪 DIRETÓRIO PARA OS COOKIES (AGORA CRIADOS DINAMICAMENTE)
 const COOKIES_DIR = path.join(__dirname, "cookies")
 
 // 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
@@ -26,8 +26,72 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
-// 🍪 CARREGAR E GERENCIAR O POOL DE COOKIES
-let cookiePool = []
+// 🛡️ NOVO: CRIAR COOKIES SEGUROS A PARTIR DE ENVIRONMENT VARIABLES
+function createSecureCookieFiles() {
+  console.log("🛡️ Criando arquivos de cookie seguros a partir de environment variables...")
+
+  if (!fs.existsSync(COOKIES_DIR)) {
+    fs.mkdirSync(COOKIES_DIR, { recursive: true })
+  }
+
+  let cookiesCreated = 0
+
+  // 🔵 COOKIES GOOGLE (para YouTube + Twitter + Reddit)
+  for (let i = 1; i <= 10; i++) {
+    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
+      const filepath = path.join(COOKIES_DIR, filename)
+
+      fs.writeFileSync(filepath, cookieContent)
+      console.log(`✅ Cookie Google ${i} criado: ${filename}`)
+      cookiesCreated++
+    }
+  }
+
+  // 📸 COOKIES INSTAGRAM
+  for (let i = 1; i <= 8; i++) {
+    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      const filename = `instagram_conta${i.toString().padStart(2, "0")}.txt`
+      const filepath = path.join(COOKIES_DIR, filename)
+
+      fs.writeFileSync(filepath, cookieContent)
+      console.log(`✅ Cookie Instagram ${i} criado: ${filename}`)
+      cookiesCreated++
+    }
+  }
+
+  // 📘 COOKIES FACEBOOK (opcional)
+  for (let i = 1; i <= 3; i++) {
+    const envVar = `FACEBOOK_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      const filename = `facebook_conta${i.toString().padStart(2, "0")}.txt`
+      const filepath = path.join(COOKIES_DIR, filename)
+
+      fs.writeFileSync(filepath, cookieContent)
+      console.log(`✅ Cookie Facebook ${i} criado: ${filename}`)
+      cookiesCreated++
+    }
+  }
+
+  console.log(`🎯 Total de cookies criados: ${cookiesCreated}`)
+  return cookiesCreated
+}
+
+// 🍪 POOLS DE COOKIES ORGANIZADOS POR PLATAFORMA (NOVO)
+let googleCookiePool = []
+let instagramCookiePool = []
+let facebookCookiePool = []
+let generalCookiePool = [] // Para compatibilidade com código existente
+
+// 🍪 CARREGAR E GERENCIAR O POOL DE COOKIES (MELHORADO)
 let currentCookieIndex = 0
 
 function loadCookiePool() {
@@ -39,25 +103,63 @@ function loadCookiePool() {
     }
 
     const files = fs.readdirSync(COOKIES_DIR).filter((file) => file.endsWith(".txt"))
-    cookiePool = files.map((file) => path.join(COOKIES_DIR, file))
 
-    if (cookiePool.length > 0) {
-      console.log(`🍪 ${cookiePool.length} arquivos de cookie carregados com sucesso!`)
+    // 🔵 SEPARAR COOKIES POR PLATAFORMA
+    googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
+    instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
+    facebookCookiePool = files.filter((f) => f.startsWith("facebook_")).map((f) => path.join(COOKIES_DIR, f))
+
+    // Pool geral para compatibilidade
+    generalCookiePool = files.map((file) => path.join(COOKIES_DIR, file))
+
+    console.log(`🔵 Google cookies carregados: ${googleCookiePool.length}`)
+    console.log(`📸 Instagram cookies carregados: ${instagramCookiePool.length}`)
+    console.log(`📘 Facebook cookies carregados: ${facebookCookiePool.length}`)
+    console.log(`🍪 Total de cookies: ${generalCookiePool.length}`)
+
+    if (generalCookiePool.length > 0) {
+      console.log(`🍪 ${generalCookiePool.length} arquivos de cookie carregados com sucesso!`)
     } else {
-      console.warn("⚠️ Nenhum arquivo de cookie (.txt) encontrado no diretório /cookies.")
+      console.warn("⚠️ Nenhum cookie encontrado. Adicione cookies via environment variables.")
     }
   } catch (error) {
     console.error("❌ Erro ao carregar pool de cookies:", error)
   }
 }
 
-// Função para obter o próximo cookie do pool (rotação)
+// 🎯 NOVO: SELETOR INTELIGENTE DE COOKIE POR PLATAFORMA
+function getSmartCookie(platform) {
+  switch (platform.toLowerCase()) {
+    case "youtube":
+    case "twitter":
+    case "reddit":
+      return getRandomFromPool(googleCookiePool)
+
+    case "instagram":
+      return getRandomFromPool(instagramCookiePool)
+
+    case "facebook":
+      return getRandomFromPool(facebookCookiePool)
+
+    case "tiktok":
+    default:
+      // TikTok funciona sem cookies, mas se tiver cookies gerais, usar
+      return getRandomFromPool(generalCookiePool)
+  }
+}
+
+function getRandomFromPool(pool) {
+  if (pool.length === 0) return null
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
+// Função para obter o próximo cookie do pool (rotação) - MANTIDA PARA COMPATIBILIDADE
 function getNextCookie() {
-  if (cookiePool.length === 0) {
+  if (generalCookiePool.length === 0) {
     return null
   }
-  const cookieFile = cookiePool[currentCookieIndex]
-  currentCookieIndex = (currentCookieIndex + 1) % cookiePool.length
+  const cookieFile = generalCookiePool[currentCookieIndex]
+  currentCookieIndex = (currentCookieIndex + 1) % generalCookiePool.length
   return cookieFile
 }
 
@@ -310,8 +412,6 @@ setInterval(cleanupOldFiles, 30 * 60 * 1000)
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   const randomUA = getRandomUserAgent()
-  // 🍪 PEGA O PRÓXIMO COOKIE DA ROTAÇÃO
-  const cookieFile = getNextCookie()
 
   try {
     const { url, format, quality, platform } = req.body
@@ -319,12 +419,16 @@ app.post("/download", async (req, res) => {
     // 🎯 DETECTAR PLATAFORMA AUTOMATICAMENTE
     const detectedPlatform = detectPlatform(url)
 
+    // 🍪 NOVO: USAR COOKIE INTELIGENTE POR PLATAFORMA
+    const cookieFile = getSmartCookie(detectedPlatform)
+
     console.log("🎯 Nova requisição:", { url, format, quality, platform: detectedPlatform })
     console.log("🕵️ User-Agent:", randomUA.substring(0, 50) + "...")
+
     if (cookieFile) {
-      console.log("🍪 Usando cookie:", path.basename(cookieFile))
+      console.log(`🍪 Usando cookie ${detectedPlatform}:`, path.basename(cookieFile))
     } else {
-      console.warn("⚠️ Nenhuma conta/cookie disponível, tentando sem autenticação.")
+      console.warn(`⚠️ Nenhum cookie disponível para ${detectedPlatform}`)
 
       // 📸 AVISO ESPECÍFICO PARA INSTAGRAM SEM COOKIES
       if (detectedPlatform === "instagram") {
@@ -360,17 +464,17 @@ app.post("/download", async (req, res) => {
           // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
           if (detectedPlatform === "instagram") {
             return res.status(400).json({
-              error: "Instagram requer login. Adicione cookies do Instagram para acessar este conteúdo.",
+              error: "Instagram requer login. Adicione cookies do Instagram via environment variables.",
               type: "instagram_auth_required",
-              suggestion: "Faça login no Instagram no seu navegador e exporte os cookies para o diretório /cookies.",
+              suggestion: "Configure INSTAGRAM_COOKIE_01, INSTAGRAM_COOKIE_02, etc. no Railway.",
               platform: "instagram",
             })
           }
 
           return res.status(400).json({
-            error: "Este conteúdo é privado ou requer login. O cookie usado pode ter expirado ou sido inválido.",
+            error: "Este conteúdo é privado ou requer login. Configure cookies via environment variables.",
             type: "private_content",
-            suggestion: "Verifique se seus arquivos de cookie estão atualizados.",
+            suggestion: "Adicione cookies apropriados no Railway Dashboard.",
           })
         }
         return res.status(500).json({ error: "Falha ao obter informações do vídeo" })
@@ -429,15 +533,15 @@ app.post("/download", async (req, res) => {
             // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
             if (detectedPlatform === "instagram") {
               return res.status(400).json({
-                error: "Instagram bloqueou o acesso. Cookies necessários ou expirados.",
+                error: "Instagram bloqueou o acesso. Configure cookies via environment variables.",
                 type: "instagram_blocked",
-                suggestion: "Atualize os cookies do Instagram ou tente com outro vídeo público.",
+                suggestion: "Adicione INSTAGRAM_COOKIE_01, INSTAGRAM_COOKIE_02, etc. no Railway.",
                 platform: "instagram",
               })
             }
 
             return res.status(400).json({
-              error: "Conteúdo privado ou bloqueado. O cookie pode ter falhado.",
+              error: "Conteúdo privado ou bloqueado. Configure cookies apropriados.",
               type: "private_content",
             })
           }
@@ -478,6 +582,7 @@ app.post("/download", async (req, res) => {
           size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
           path: finalFilePath,
           used_cookies: !!cookieFile,
+          cookie_type: cookieFile ? path.basename(cookieFile).split("_")[0] : "none",
         })
 
         res.json({
@@ -489,6 +594,7 @@ app.post("/download", async (req, res) => {
           platform: detectedPlatform,
           quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
           used_cookies: !!cookieFile,
+          cookie_type: cookieFile ? path.basename(cookieFile).split("_")[0] : "none",
         })
       })
     })
@@ -560,21 +666,34 @@ app.get("/downloads/:fileKey", (req, res) => {
 // Rota para verificar status do servidor
 app.get("/health", (req, res) => {
   const stats = {
-    status: "OK",
+    status: "OK - SECURE COOKIES",
+    version: "4.0.0 - SECURE EDITION",
     timestamp: new Date().toISOString(),
     downloads_dir: DOWNLOADS,
     cookies_dir: COOKIES_DIR,
-    cookies_loaded: cookiePool.length,
+    cookies_loaded: {
+      google: googleCookiePool.length,
+      instagram: instagramCookiePool.length,
+      facebook: facebookCookiePool.length,
+      total: generalCookiePool.length,
+    },
     current_cookie_index: currentCookieIndex,
     yt_dlp_path: ytDlpPath,
     user_agents_count: userAgents.length,
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || "development",
+    security: {
+      cookies_from_env: "✅ Environment Variables",
+      github_safe: "✅ No cookies in repository",
+      runtime_creation: "✅ Files created at startup",
+      platform_specific: "✅ Smart cookie selection",
+    },
     optimizations: {
       tiktok: "enabled - anti-corruption",
       instagram: "enabled - requires cookies",
       twitter: "enabled",
       filename_mapping: "enabled",
+      smart_cookies: "enabled",
     },
     active_files: fileMap.size,
   }
@@ -621,6 +740,35 @@ app.get("/files", (req, res) => {
   }
 })
 
+// 🍪 NOVA ROTA: Verificar cookies carregados
+app.get("/cookies", (req, res) => {
+  try {
+    const cookieStats = {
+      google: {
+        count: googleCookiePool.length,
+        files: googleCookiePool.map((f) => path.basename(f)),
+        platforms: ["YouTube", "Twitter", "Reddit"],
+      },
+      instagram: {
+        count: instagramCookiePool.length,
+        files: instagramCookiePool.map((f) => path.basename(f)),
+        platforms: ["Instagram"],
+      },
+      facebook: {
+        count: facebookCookiePool.length,
+        files: facebookCookiePool.map((f) => path.basename(f)),
+        platforms: ["Facebook"],
+      },
+      total: generalCookiePool.length,
+      security: "✅ Loaded from environment variables",
+    }
+
+    res.json(cookieStats)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Rota para testar User-Agent (debug)
 app.get("/test-ua", (req, res) => {
   res.json({
@@ -633,18 +781,30 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🎌 WaifuConvert Backend - Instagram Support Added!",
-    version: "3.4.0",
-    status: "online",
-    cookies_loaded: cookiePool.length,
-    platform_support: {
-      tiktok: "✅ Working perfectly",
-      twitter: "✅ Working perfectly",
-      instagram: "✅ Working with cookies",
-      youtube: "⚠️ Requires cookies",
-      reddit: "✅ Usually works",
-      facebook: "⚠️ Requires cookies",
+    message: "🛡️ WaifuConvert Backend - SECURE COOKIES EDITION!",
+    version: "4.0.0",
+    status: "online - secure cookies active",
+    cookies_loaded: {
+      google: googleCookiePool.length,
+      instagram: instagramCookiePool.length,
+      facebook: facebookCookiePool.length,
+      total: generalCookiePool.length,
     },
+    platform_support: {
+      tiktok: "✅ Working perfectly (no cookies needed)",
+      twitter: `✅ Working with ${googleCookiePool.length} Google cookies`,
+      instagram: `✅ Working with ${instagramCookiePool.length} Instagram cookies`,
+      youtube: `✅ Working with ${googleCookiePool.length} Google cookies`,
+      reddit: `✅ Working with ${googleCookiePool.length} Google cookies`,
+      facebook: `✅ Working with ${facebookCookiePool.length} Facebook cookies`,
+    },
+    security_features: [
+      "✅ Cookies from environment variables",
+      "✅ Runtime file creation",
+      "✅ Platform-specific cookie pools",
+      "✅ No sensitive data in repository",
+      "✅ Smart cookie selection",
+    ],
     active_downloads: fileMap.size,
   })
 })
@@ -659,13 +819,23 @@ app.use((error, req, res, next) => {
 
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - INSTAGRAM SUPPORT ADDED")
+  console.log("🛡️ WaifuConvert Backend - SECURE COOKIES EDITION")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
 
-  // Carrega os cookies na inicialização
+  // 🛡️ 1. CRIAR COOKIES SEGUROS A PARTIR DE ENV VARS
+  const cookiesCreated = createSecureCookieFiles()
+
+  // 🍪 2. CARREGAR POOLS DE COOKIES
   loadCookiePool()
+
+  console.log("🔒 SEGURANÇA ATIVADA:")
+  console.log("  ✅ Cookies criados a partir de environment variables")
+  console.log("  ✅ Nenhum cookie no GitHub")
+  console.log("  ✅ Arquivos criados em runtime")
+  console.log("  ✅ Pools organizados por plataforma")
+  console.log("  ✅ Seleção inteligente de cookies")
 
   console.log("🛡️ Proteções ativadas:")
   console.log("  ✅ Rotação de Cookies + Anti-detecção")
@@ -674,6 +844,14 @@ app.listen(PORT, () => {
   console.log("  ✅ Twitter/X: Funcionando perfeitamente")
   console.log("  ✅ Sistema de mapeamento de arquivos")
   console.log("  ✅ Limpeza de caracteres especiais")
+
+  console.log("🍪 COOKIES CARREGADOS:")
+  console.log(`  🔵 Google: ${googleCookiePool.length} (YouTube + Twitter + Reddit)`)
+  console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
+  console.log(`  📘 Facebook: ${facebookCookiePool.length}`)
+  console.log(`  🎵 TikTok: Não precisa de cookies`)
+  console.log(`  📊 Total: ${generalCookiePool.length} cookies`)
+
   console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
 
   cleanupOldFiles()
