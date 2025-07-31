@@ -1,13 +1,97 @@
-# Logs
-logs
-*.log
+# Dependencies
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
 
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+.grunt
+
+# Bower dependency directory (https://bower.io/)
+bower_components
+
+# node-waf configuration
+.lock-wscript
+
+# Compiled binary addons (https://nodejs.org/api/addons.html)
+build/Release
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# TypeScript v1 declaration files
+typings/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+.env.test
+.env.local
+.env.production
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# Next.js build output
+.next
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+public
+
+# Storybook build outputs
+.out
+.storybook-out
+
+# Temporary folders
+tmp/
+temp/
+
+# Logs
+logs
+*.log
 
 # Runtime data
 pids
@@ -41,8 +125,8 @@ build/Release
 node_modules/
 jspm_packages/
 
-# Snowpack dependency directory (https://snowpack.dev/)
-web_modules/
+# TypeScript v1 declaration files
+typings/
 
 # TypeScript cache
 *.tsbuildinfo
@@ -53,8 +137,11 @@ web_modules/
 # Optional eslint cache
 .eslintcache
 
-# Optional stylelint cache
-.stylelintcache
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
 
 # Optional REPL history
 .node_repl_history
@@ -65,47 +152,12 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
-.env
-.env.*
-!.env.example
-
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
 
-# Next.js build output
-.next
-out
-
-# Nuxt.js build / generate output
-.nuxt
-dist
-
-# Gatsby files
-.cache/
-# Comment in the public line in if your project uses Gatsby and not Next.js
-# https://nextjs.org/blog/next-9-1#public-directory-support
-# public
-
-# vuepress build output
+# Vuepress build output
 .vuepress/dist
-
-# vuepress v2.x temp and cache directory
-.temp
-.cache
-
-# Sveltekit cache directory
-.svelte-kit/
-
-# vitepress build output
-**/.vitepress/dist
-
-# vitepress cache directory
-**/.vitepress/cache
-
-# Docusaurus cache and generated files
-.docusaurus
 
 # Serverless directories
 .serverless/
@@ -116,45 +168,126 @@ dist
 # DynamoDB Local files
 .dynamodb/
 
-# Firebase cache directory
-.firebase/
-
 # TernJS port file
 .tern-port
 
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
-# yarn v3
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/sdks
-!.yarn/versions
-
-# Vite logs files
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
-
-# Downloads e arquivos temporários
-downloads/
-temp/
-
-# Executáveis Windows (não funcionam no Linux)
-yt-dlp.exe
-*.exe
-
-# Arquivos específicos do projeto
-railway.toml.backup
-
-# 🚨 IMPORTANTE: NUNCA COMMITAR COOKIES!
-cookies/
+# 🛡️ SEGURANÇA MÁXIMA - BLOQUEAR TODOS OS TIPOS DE COOKIES
+# Arquivos de cookie em qualquer formato
 *.txt
-cookie*.txt
-*cookie*.txt
-*_cookie_*
-google_conta*.txt
-instagram_conta*.txt
-facebook_conta*.txt
+cookies/
+cookies/*
+cookie/
+cookie/*
+auth/
+auth/*
+session/
+session/*
+
+# Formatos específicos de cookies
+*.cookies
+*.cookie
+*.session
+*.auth
+*.netscape
+*.mozilla
+
+# Arquivos de autenticação
+*cookie*
+*auth*
+*session*
+*login*
+
+# Diretórios de dados sensíveis
+data/
+cache/
+temp/
+tmp/
+
+# Arquivos de configuração que podem conter dados sensíveis
+config.json
+secrets.json
+credentials.json
+
+# Downloads (arquivos temporários)
+downloads/
+downloads/*
+
+# Logs que podem conter informações sensíveis
+*.log
+logs/
+logs/*
+
+# Arquivos de backup
+*.bak
+*.backup
+*.old
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 🚨 EXTRA SECURITY - BLOCK COMMON COOKIE PATTERNS
+google_*.txt
+instagram_*.txt
+facebook_*.txt
+twitter_*.txt
+youtube_*.txt
+tiktok_*.txt
+reddit_*.txt
+general_*.txt
+
+# Block any numbered cookie files
+*_01.txt
+*_02.txt
+*_03.txt
+*_04.txt
+*_05.txt
+*_06.txt
+*_07.txt
+*_08.txt
+*_09.txt
+*_10.txt
+*_11.txt
+*_12.txt
+*_13.txt
+*_14.txt
+*_15.txt
+*_16.txt
+*_17.txt
+*_18.txt
+*_19.txt
+*_20.txt
+
+# Block browser export formats
+cookies_*.json
+cookies_*.txt
+cookies_*.csv
+export_*.txt
+export_*.json
+
+# Block common cookie file names
+netscape_cookies.txt
+mozilla_cookies.txt
+chrome_cookies.txt
+firefox_cookies.txt
+safari_cookies.txt
+edge_cookies.txt
