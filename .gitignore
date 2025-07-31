@@ -148,3 +148,13 @@ yt-dlp.exe
 
 # Arquivos específicos do projeto
 railway.toml.backup
+
+# 🚨 IMPORTANTE: NUNCA COMMITAR COOKIES!
+cookies/
+*.txt
+cookie*.txt
+*cookie*.txt
+*_cookie_*
+google_conta*.txt
+instagram_conta*.txt
+facebook_conta*.txt
