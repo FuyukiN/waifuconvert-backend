@@ -12,8 +12,10 @@ const app = express()
 
 // 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
 const PORT = process.env.PORT || 8080
-const MAX_CONCURRENT_DOWNLOADS = 8 // era 5
-const MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB (era 500MB)
+const MAX_CONCURRENT_DOWNLOADS = 8
+const MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB
+const MAX_DURATION = 7200 // 🕐 2 HORAS PARA TUDO (MP3/MP4, qualquer qualidade)
+
 const ALLOWED_DOMAINS = [
   // TikTok
   "tiktok.com",
@@ -78,6 +80,64 @@ const COOKIES_DIR = path.join(__dirname, "cookies")
 // 🛡️ CONTADOR DE DOWNLOADS ATIVOS
 let activeDownloads = 0
 
+// 🕐 FUNÇÃO SIMPLES PARA VERIFICAR DURAÇÃO
+function checkDuration(duration) {
+  if (!duration || duration <= 0) {
+    return { allowed: true, message: null }
+  }
+
+  // Converter para segundos se necessário
+  const durationSeconds = typeof duration === "string" ? parseDurationString(duration) : duration
+
+  if (durationSeconds > MAX_DURATION) {
+    const durationFormatted = formatDuration(durationSeconds)
+    const maxFormatted = formatDuration(MAX_DURATION)
+
+    return {
+      allowed: false,
+      message: `Vídeo muito longo! Máximo: ${maxFormatted}. Seu vídeo: ${durationFormatted}`,
+      duration_formatted: durationFormatted,
+      max_duration: maxFormatted,
+    }
+  }
+
+  return {
+    allowed: true,
+    message: null,
+    duration_formatted: formatDuration(durationSeconds),
+  }
+}
+
+// 🕐 PARSER DE DURAÇÃO SIMPLES
+function parseDurationString(durationStr) {
+  if (typeof durationStr === "number") return durationStr
+
+  // Formato: "1:23:45" ou "23:45" ou "45"
+  const parts = durationStr.toString().split(":").reverse()
+  let seconds = 0
+
+  if (parts[0]) seconds += Number.parseInt(parts[0]) || 0 // segundos
+  if (parts[1]) seconds += (Number.parseInt(parts[1]) || 0) * 60 // minutos
+  if (parts[2]) seconds += (Number.parseInt(parts[2]) || 0) * 3600 // horas
+
+  return seconds
+}
+
+// 📏 FORMATADOR DE DURAÇÃO AMIGÁVEL
+function formatDuration(seconds) {
+  if (seconds < 60) {
+    return `${seconds}s`
+  } else if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`
+  } else {
+    const hours = Math.floor(seconds / 3600)
+    const mins = Math.floor((seconds % 3600) / 60)
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+  }
+}
+
 // 🛡️ MIDDLEWARE DE SEGURANÇA
 app.use(
   helmet({
@@ -99,8 +159,8 @@ app.use(
 
 // 🛡️ RATE LIMITING MAIS AMIGÁVEL
 const downloadLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutos (era 15)
-  max: 20, // máximo 20 downloads por IP a cada 10 minutos (era 10 a cada 15)
+  windowMs: 10 * 60 * 1000, // 10 minutos
+  max: 20, // máximo 20 downloads por IP a cada 10 minutos
   message: {
     error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
     type: "rate_limit_exceeded",
@@ -111,7 +171,7 @@ const downloadLimiter = rateLimit({
 
 const generalLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minuto
-  max: 60, // máximo 60 requests por IP por minuto (era 30)
+  max: 60, // máximo 60 requests por IP por minuto
   message: {
     error: "Muitas requisições. Tente novamente em 1 minuto.",
     type: "rate_limit_exceeded",
@@ -124,7 +184,6 @@ app.use("/download", downloadLimiter)
 // 🛡️ VALIDAÇÃO DE URL SEGURA
 function isValidUrl(url) {
   try {
-    // Verificar se é uma URL válida
     if (
       !validator.isURL(url, {
         protocols: ["http", "https"],
@@ -133,8 +192,8 @@ function isValidUrl(url) {
         allow_underscores: true,
         allow_trailing_dot: false,
         allow_protocol_relative_urls: false,
-        allow_fragments: true, // Permite #
-        allow_query_components: true, // Permite ?param=value
+        allow_fragments: true,
+        allow_query_components: true,
       })
     ) {
       return false
@@ -143,42 +202,32 @@ function isValidUrl(url) {
     const parsedUrl = new URL(url)
     const hostname = parsedUrl.hostname.toLowerCase()
 
-    // 🎯 VERIFICAÇÃO MAIS INTELIGENTE DE DOMÍNIOS
     const isAllowedDomain = ALLOWED_DOMAINS.some((domain) => {
-      // Domínio exato
       if (hostname === domain) return true
-
-      // Subdomínio (ex: vm.tiktok.com, www.youtube.com, mobile.twitter.com)
       if (hostname.endsWith("." + domain)) return true
-
-      // Casos especiais para domínios conhecidos
       if (domain === "tiktok.com" && (hostname.includes("tiktok") || hostname.includes("musically"))) return true
-      if (domain === "twitter.com" && hostname.includes("twimg")) return true // Para imagens do Twitter
+      if (domain === "twitter.com" && hostname.includes("twimg")) return true
       if (domain === "youtube.com" && (hostname.includes("youtube") || hostname.includes("youtu"))) return true
       if (domain === "instagram.com" && (hostname.includes("instagram") || hostname.includes("cdninstagram")))
         return true
-
       return false
     })
 
     if (!isAllowedDomain) {
       console.warn(`🚫 Domínio não permitido: ${hostname}`)
-      console.warn(`📝 URL completa: ${url.substring(0, 100)}...`)
       return false
     }
 
-    // Verificar se não é um IP local/privado (mais específico)
     const privateIpPatterns = [
-      /^127\./, // 127.x.x.x
-      /^192\.168\./, // 192.168.x.x
-      /^10\./, // 10.x.x.x
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.x.x - 172.31.x.x
-      /^0\.0\.0\.0$/, // 0.0.0.0
-      /^localhost$/i, // localhost
+      /^127\./,
+      /^192\.168\./,
+      /^10\./,
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+      /^0\.0\.0\.0$/,
+      /^localhost$/i,
     ]
 
     const isPrivateIp = privateIpPatterns.some((pattern) => pattern.test(hostname))
-
     if (isPrivateIp) {
       console.warn(`🚫 IP privado/local bloqueado: ${hostname}`)
       return false
@@ -194,12 +243,11 @@ function isValidUrl(url) {
 // 🛡️ SANITIZAÇÃO DE ENTRADA
 function sanitizeInput(input, maxLength = 100) {
   if (typeof input !== "string") return ""
-
   return input
     .trim()
     .substring(0, maxLength)
-    .replace(/[<>"'&]/g, "") // Remove caracteres perigosos
-    .replace(/\0/g, "") // Remove null bytes
+    .replace(/[<>"'&]/g, "")
+    .replace(/\0/g, "")
 }
 
 // 🛡️ GERAÇÃO DE NOMES DE ARQUIVO SEGUROS
@@ -224,7 +272,6 @@ function validateDownloadParams(url, format, quality) {
   if (!url || typeof url !== "string") {
     errors.push("Por favor, cole um link válido")
   } else if (!isValidUrl(url)) {
-    // Detectar qual pode ser o problema
     try {
       const hostname = new URL(url).hostname.toLowerCase()
       if (hostname.includes("localhost") || hostname.startsWith("127.") || hostname.startsWith("192.168.")) {
@@ -258,7 +305,7 @@ function validateDownloadParams(url, format, quality) {
 // 🛡️ EXECUÇÃO SEGURA DE COMANDOS
 function executeSecureCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 600000 // 10 minutos padrão (era 5)
+    const timeout = options.timeout || 600000
 
     console.log("🚀 Executando comando seguro:", command, args.slice(0, 3).join(" "), "...")
 
@@ -291,7 +338,6 @@ function executeSecureCommand(command, args, options = {}) {
       reject(error)
     })
 
-    // Timeout manual adicional
     const timeoutId = setTimeout(() => {
       child.kill("SIGKILL")
       reject(new Error("Comando excedeu tempo limite"))
@@ -303,10 +349,8 @@ function executeSecureCommand(command, args, options = {}) {
   })
 }
 
-// YT-DLP PATH SEGURO
 const ytDlpPath = "yt-dlp"
 
-// User-Agents atualizados
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -320,12 +364,11 @@ function createSecureCookieFiles() {
   console.log("🛡️ Criando arquivos de cookie seguros...")
 
   if (!fs.existsSync(COOKIES_DIR)) {
-    fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 }) // Permissões restritas
+    fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
   }
 
   let cookiesCreated = 0
 
-  // Cookies Google
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -334,16 +377,14 @@ function createSecureCookieFiles() {
       const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      // Validar conteúdo do cookie
       if (cookieContent.length > 10 && cookieContent.includes("=")) {
-        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 }) // Permissões restritas
+        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
         console.log(`✅ Cookie Google ${i} criado: ${filename}`)
         cookiesCreated++
       }
     }
   }
 
-  // Cookies Instagram
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -364,7 +405,6 @@ function createSecureCookieFiles() {
   return cookiesCreated
 }
 
-// Pools de cookies
 let googleCookiePool = []
 let instagramCookiePool = []
 let generalCookiePool = []
@@ -448,7 +488,6 @@ function getFormatSelector(format, quality, platform) {
     return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
   }
 
-  // Configurações padrão
   if (q >= 1080) {
     return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
   } else if (q >= 720) {
@@ -538,7 +577,6 @@ function isAuthenticationError(errorMessage) {
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
 }
 
-// Mapa de arquivos seguro
 const fileMap = new Map()
 
 function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
@@ -593,7 +631,6 @@ function cleanupOldFiles() {
   }
 }
 
-// CORS seguro
 app.use(
   cors({
     origin: [
@@ -610,7 +647,6 @@ app.use(
 
 app.use(express.json({ limit: "10mb" }))
 
-// Criar diretórios
 if (!fs.existsSync(DOWNLOADS)) {
   fs.mkdirSync(DOWNLOADS, { recursive: true, mode: 0o755 })
 }
@@ -619,12 +655,11 @@ if (!fs.existsSync(COOKIES_DIR)) {
   fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
-// 🛡️ ROTA PRINCIPAL DE DOWNLOAD SEGURA
+// 🛡️ ROTA PRINCIPAL COM VERIFICAÇÃO SIMPLES DE 2H
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
 
   try {
-    // 🛡️ Verificar limite de downloads simultâneos
     if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
       return res.status(429).json({
         error: "Servidor ocupado no momento. Tente novamente em 1-2 minutos.",
@@ -635,7 +670,6 @@ app.post("/download", async (req, res) => {
 
     const { url, format, quality } = req.body
 
-    // 🛡️ Validar parâmetros
     const validationErrors = validateDownloadParams(url, format, quality)
     if (validationErrors.length > 0) {
       return res.status(400).json({
@@ -659,7 +693,7 @@ app.post("/download", async (req, res) => {
       platform: detectedPlatform,
     })
 
-    // 🛡️ Obter informações do vídeo com comando seguro
+    // 🛡️ Obter informações do vídeo
     const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
 
     try {
@@ -677,7 +711,19 @@ app.post("/download", async (req, res) => {
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
-      // 🛡️ Verificar tamanho do arquivo
+      // 🕐 VERIFICAÇÃO SIMPLES DE DURAÇÃO - 2H PARA TUDO!
+      const durationCheck = checkDuration(data.duration)
+      if (!durationCheck.allowed) {
+        console.log("🚫 Vídeo rejeitado por duração:", durationCheck.message)
+        return res.status(400).json({
+          error: durationCheck.message,
+          type: "duration_exceeded",
+          video_duration: durationCheck.duration_formatted,
+          max_duration: durationCheck.max_duration,
+          suggestion: "Tente um vídeo mais curto (máximo 2 horas para qualquer formato)",
+        })
+      }
+
       if (data.filesize && data.filesize > MAX_FILE_SIZE) {
         return res.status(400).json({
           error: "Arquivo muito grande. Máximo permitido: 1GB",
@@ -688,9 +734,13 @@ app.post("/download", async (req, res) => {
       const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
       const outputPath = path.join(DOWNLOADS, safeTitle)
 
-      console.log("📁 Arquivo seguro:", safeTitle)
+      console.log("📁 Arquivo aprovado:", {
+        title: data.title.substring(0, 30) + "...",
+        duration: durationCheck.duration_formatted || "N/A",
+        filename: safeTitle,
+      })
 
-      // 🛡️ Construir comando de download seguro
+      // Construir comando de download
       let downloadArgs
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
@@ -748,7 +798,6 @@ app.post("/download", async (req, res) => {
         timeout: 600000,
       })
 
-      // 🛡️ Verificar arquivo criado
       let finalFilePath = outputPath
       if (!fs.existsSync(finalFilePath)) {
         finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
@@ -764,7 +813,6 @@ app.post("/download", async (req, res) => {
         return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
       }
 
-      // 🛡️ Mapear arquivo com chave segura
       const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
       fileMap.set(downloadKey, {
         actualPath: finalFilePath,
@@ -778,6 +826,7 @@ app.post("/download", async (req, res) => {
         platform: detectedPlatform,
         downloadKey: downloadKey,
         size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
+        duration: durationCheck.duration_formatted || "N/A",
         used_cookies: !!cookieFile,
       })
 
@@ -787,6 +836,7 @@ app.post("/download", async (req, res) => {
         size: stats.size,
         title: data.title,
         duration: data.duration,
+        duration_formatted: durationCheck.duration_formatted,
         platform: detectedPlatform,
         quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
         used_cookies: !!cookieFile,
@@ -819,7 +869,6 @@ app.post("/download", async (req, res) => {
   }
 })
 
-// 🛡️ ROTA DE DOWNLOAD SEGURA
 app.get("/downloads/:fileKey", (req, res) => {
   const fileKey = sanitizeInput(req.params.fileKey, 100)
 
@@ -838,7 +887,6 @@ app.get("/downloads/:fileKey", (req, res) => {
   }
 
   try {
-    // 🛡️ Headers seguros para download
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", size)
@@ -867,16 +915,21 @@ app.get("/downloads/:fileKey", (req, res) => {
   }
 })
 
-// 🛡️ ROTA DE HEALTH CHECK SEGURA
 app.get("/health", (req, res) => {
   const stats = {
     status: "OK - SECURE",
-    version: "5.0.0 - SECURITY HARDENED",
+    version: "5.0.0 - SECURITY HARDENED + DURATION LIMITS",
     timestamp: new Date().toISOString(),
+    limits: {
+      max_duration: formatDuration(MAX_DURATION),
+      max_file_size: "1GB",
+      max_concurrent: MAX_CONCURRENT_DOWNLOADS,
+    },
     security_features: [
       "✅ Input validation",
       "✅ Command injection protection",
       "✅ Rate limiting",
+      "✅ Duration limits (2h max)",
       "✅ Secure file handling",
       "✅ Domain whitelist",
       "✅ Resource limits",
@@ -888,24 +941,29 @@ app.get("/health", (req, res) => {
       total: generalCookiePool.length,
     },
     active_downloads: activeDownloads,
-    max_concurrent: MAX_CONCURRENT_DOWNLOADS,
     uptime: process.uptime(),
   }
 
   res.json(stats)
 })
 
-// 🛡️ ROTA RAIZ SEGURA
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED!",
+    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + DURATION LIMITS!",
     version: "5.0.0",
     status: "online - security active",
     security_level: "HIGH",
+    limits: {
+      duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
+      file_size: "1GB máximo",
+      rate_limit: "20 downloads a cada 10 minutos",
+      concurrent: "8 downloads simultâneos",
+    },
     features: [
       "✅ Input validation & sanitization",
       "✅ Command injection protection",
       "✅ Rate limiting (20 downloads/10min)",
+      "✅ Duration limits (2h max for everything)",
       "✅ Concurrent download limits",
       "✅ Domain whitelist protection",
       "✅ Secure file handling",
@@ -922,18 +980,14 @@ app.get("/", (req, res) => {
   })
 })
 
-// 🛡️ MIDDLEWARE DE TRATAMENTO DE ERROS SEGURO
 app.use((error, req, res, next) => {
   console.error("❌ Erro não tratado:", error.message)
-
-  // Não vazar informações sensíveis
   res.status(500).json({
     error: "Erro interno do servidor",
     timestamp: new Date().toISOString(),
   })
 })
 
-// 🛡️ MIDDLEWARE PARA ROTAS NÃO ENCONTRADAS
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Rota não encontrada",
@@ -941,17 +995,16 @@ app.use("*", (req, res) => {
   })
 })
 
-// Limpeza automática
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
-// 🚀 INICIAR SERVIDOR SEGURO
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED EDITION")
+  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + DURATION LIMITS")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
   console.log("  ✅ Proteção contra command injection")
   console.log("  ✅ Rate limiting inteligente")
+  console.log("  ✅ Limite de duração: 2 horas para tudo")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -966,10 +1019,13 @@ app.listen(PORT, () => {
   console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
   console.log(`  📊 Total: ${generalCookiePool.length}`)
 
+  console.log("🕐 LIMITES DE DURAÇÃO:")
+  console.log(`  📹 Qualquer formato: máximo ${formatDuration(MAX_DURATION)}`)
+  console.log(`  📁 Tamanho máximo: 1GB`)
+
   cleanupOldFiles()
 })
 
-// 🛡️ HANDLERS DE ERRO SEGUROS
 process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error.message)
   process.exit(1)
@@ -979,7 +1035,6 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
 })
 
-// 🛡️ GRACEFUL SHUTDOWN
 process.on("SIGTERM", () => {
   console.log("🛑 Recebido SIGTERM, encerrando graciosamente...")
   process.exit(0)
