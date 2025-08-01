@@ -1,42 +1,331 @@
 const express = require("express")
 const cors = require("cors")
-const { exec } = require("child_process")
+const { exec, spawn } = require("child_process")
 const fs = require("fs")
 const path = require("path")
+const rateLimit = require("express-rate-limit")
+const helmet = require("helmet")
+const validator = require("validator")
+const crypto = require("crypto")
 
 const app = express()
 
-// 🌐 PORTA DINÂMICA PARA DEPLOY
+// 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
 const PORT = process.env.PORT || 8080
+const MAX_CONCURRENT_DOWNLOADS = 8 // era 5
+const MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB (era 500MB)
+const ALLOWED_DOMAINS = [
+  // TikTok
+  "tiktok.com",
+  "vm.tiktok.com",
+  "vt.tiktok.com",
+  "m.tiktok.com",
+  "www.tiktok.com",
+
+  // Twitter/X
+  "twitter.com",
+  "x.com",
+  "t.co",
+  "mobile.twitter.com",
+  "www.twitter.com",
+  "www.x.com",
+
+  // Instagram
+  "instagram.com",
+  "www.instagram.com",
+  "m.instagram.com",
+
+  // YouTube
+  "youtube.com",
+  "youtu.be",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+
+  // Reddit
+  "reddit.com",
+  "www.reddit.com",
+  "old.reddit.com",
+  "m.reddit.com",
+  "new.reddit.com",
+
+  // Facebook
+  "facebook.com",
+  "fb.watch",
+  "www.facebook.com",
+  "m.facebook.com",
+  "web.facebook.com",
+
+  // Outras plataformas
+  "twitch.tv",
+  "clips.twitch.tv",
+  "www.twitch.tv",
+  "soundcloud.com",
+  "www.soundcloud.com",
+  "m.soundcloud.com",
+  "vimeo.com",
+  "www.vimeo.com",
+  "player.vimeo.com",
+  "dailymotion.com",
+  "www.dailymotion.com",
+  "streamable.com",
+  "www.streamable.com",
+]
 
 const DOWNLOADS = path.join(__dirname, "downloads")
-// 🍪 DIRETÓRIO PARA OS COOKIES (AGORA CRIADOS DINAMICAMENTE)
 const COOKIES_DIR = path.join(__dirname, "cookies")
 
-// 🚀 YT-DLP PATH CORRIGIDO PARA PRODUÇÃO
+// 🛡️ CONTADOR DE DOWNLOADS ATIVOS
+let activeDownloads = 0
+
+// 🛡️ MIDDLEWARE DE SEGURANÇA
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+      },
+    },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  }),
+)
+
+// 🛡️ RATE LIMITING MAIS AMIGÁVEL
+const downloadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutos (era 15)
+  max: 20, // máximo 20 downloads por IP a cada 10 minutos (era 10 a cada 15)
+  message: {
+    error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
+    type: "rate_limit_exceeded",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minuto
+  max: 60, // máximo 60 requests por IP por minuto (era 30)
+  message: {
+    error: "Muitas requisições. Tente novamente em 1 minuto.",
+    type: "rate_limit_exceeded",
+  },
+})
+
+app.use(generalLimiter)
+app.use("/download", downloadLimiter)
+
+// 🛡️ VALIDAÇÃO DE URL SEGURA
+function isValidUrl(url) {
+  try {
+    // Verificar se é uma URL válida
+    if (
+      !validator.isURL(url, {
+        protocols: ["http", "https"],
+        require_protocol: true,
+        require_valid_protocol: true,
+        allow_underscores: true,
+        allow_trailing_dot: false,
+        allow_protocol_relative_urls: false,
+        allow_fragments: true, // Permite #
+        allow_query_components: true, // Permite ?param=value
+      })
+    ) {
+      return false
+    }
+
+    const parsedUrl = new URL(url)
+    const hostname = parsedUrl.hostname.toLowerCase()
+
+    // 🎯 VERIFICAÇÃO MAIS INTELIGENTE DE DOMÍNIOS
+    const isAllowedDomain = ALLOWED_DOMAINS.some((domain) => {
+      // Domínio exato
+      if (hostname === domain) return true
+
+      // Subdomínio (ex: vm.tiktok.com, www.youtube.com, mobile.twitter.com)
+      if (hostname.endsWith("." + domain)) return true
+
+      // Casos especiais para domínios conhecidos
+      if (domain === "tiktok.com" && (hostname.includes("tiktok") || hostname.includes("musically"))) return true
+      if (domain === "twitter.com" && hostname.includes("twimg")) return true // Para imagens do Twitter
+      if (domain === "youtube.com" && (hostname.includes("youtube") || hostname.includes("youtu"))) return true
+      if (domain === "instagram.com" && (hostname.includes("instagram") || hostname.includes("cdninstagram")))
+        return true
+
+      return false
+    })
+
+    if (!isAllowedDomain) {
+      console.warn(`🚫 Domínio não permitido: ${hostname}`)
+      console.warn(`📝 URL completa: ${url.substring(0, 100)}...`)
+      return false
+    }
+
+    // Verificar se não é um IP local/privado (mais específico)
+    const privateIpPatterns = [
+      /^127\./, // 127.x.x.x
+      /^192\.168\./, // 192.168.x.x
+      /^10\./, // 10.x.x.x
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.x.x - 172.31.x.x
+      /^0\.0\.0\.0$/, // 0.0.0.0
+      /^localhost$/i, // localhost
+    ]
+
+    const isPrivateIp = privateIpPatterns.some((pattern) => pattern.test(hostname))
+
+    if (isPrivateIp) {
+      console.warn(`🚫 IP privado/local bloqueado: ${hostname}`)
+      return false
+    }
+
+    return true
+  } catch (error) {
+    console.error("❌ Erro na validação de URL:", error.message)
+    return false
+  }
+}
+
+// 🛡️ SANITIZAÇÃO DE ENTRADA
+function sanitizeInput(input, maxLength = 100) {
+  if (typeof input !== "string") return ""
+
+  return input
+    .trim()
+    .substring(0, maxLength)
+    .replace(/[<>"'&]/g, "") // Remove caracteres perigosos
+    .replace(/\0/g, "") // Remove null bytes
+}
+
+// 🛡️ GERAÇÃO DE NOMES DE ARQUIVO SEGUROS
+function generateSecureFilename(title, quality, format, uniqueId) {
+  const safeTitle =
+    sanitizeInput(title, 50)
+      .replace(/[^\w\s\-_.()]/g, "")
+      .replace(/\s+/g, "_")
+      .replace(/_{2,}/g, "_")
+      .trim() || "WaifuConvert"
+
+  const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
+  const ext = format === "mp3" ? "mp3" : "mp4"
+
+  return `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
+}
+
+// 🛡️ VALIDAÇÃO MAIS AMIGÁVEL
+function validateDownloadParams(url, format, quality) {
+  const errors = []
+
+  if (!url || typeof url !== "string") {
+    errors.push("Por favor, cole um link válido")
+  } else if (!isValidUrl(url)) {
+    // Detectar qual pode ser o problema
+    try {
+      const hostname = new URL(url).hostname.toLowerCase()
+      if (hostname.includes("localhost") || hostname.startsWith("127.") || hostname.startsWith("192.168.")) {
+        errors.push("Links locais não são permitidos por segurança")
+      } else {
+        errors.push(
+          `Este site não é suportado ainda. Tente: TikTok, Twitter/X, Instagram, YouTube, Reddit, Facebook, Twitch, SoundCloud, Vimeo`,
+        )
+      }
+    } catch {
+      errors.push("Link inválido. Certifique-se de copiar a URL completa (com https://)")
+    }
+  }
+
+  if (!format || !["mp3", "mp4"].includes(format)) {
+    errors.push("Escolha MP3 (áudio) ou MP4 (vídeo)")
+  }
+
+  if (quality) {
+    const q = Number.parseInt(quality)
+    if (format === "mp3" && (q < 64 || q > 320)) {
+      errors.push("Qualidade de áudio deve estar entre 64 e 320 kbps")
+    } else if (format === "mp4" && ![360, 480, 720, 1080].includes(q)) {
+      errors.push("Qualidade de vídeo deve ser 360p, 480p, 720p ou 1080p")
+    }
+  }
+
+  return errors
+}
+
+// 🛡️ EXECUÇÃO SEGURA DE COMANDOS
+function executeSecureCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = options.timeout || 600000 // 10 minutos padrão (era 5)
+
+    console.log("🚀 Executando comando seguro:", command, args.slice(0, 3).join(" "), "...")
+
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeout,
+      killSignal: "SIGKILL",
+    })
+
+    let stdout = ""
+    let stderr = ""
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString()
+    })
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString()
+    })
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr })
+      } else {
+        reject(new Error(`Comando falhou com código ${code}: ${stderr}`))
+      }
+    })
+
+    child.on("error", (error) => {
+      reject(error)
+    })
+
+    // Timeout manual adicional
+    const timeoutId = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error("Comando excedeu tempo limite"))
+    }, timeout)
+
+    child.on("close", () => {
+      clearTimeout(timeoutId)
+    })
+  })
+}
+
+// YT-DLP PATH SEGURO
 const ytDlpPath = "yt-dlp"
 
-// User-Agents rotativos para evitar bloqueios - ATUALIZADOS
+// User-Agents atualizados
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/131.0.0.0",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
-// 🛡️ NOVO: CRIAR COOKIES SEGUROS A PARTIR DE ENVIRONMENT VARIABLES
+// 🛡️ CRIAÇÃO SEGURA DE COOKIES
 function createSecureCookieFiles() {
-  console.log("🛡️ Criando arquivos de cookie seguros a partir de environment variables...")
+  console.log("🛡️ Criando arquivos de cookie seguros...")
 
   if (!fs.existsSync(COOKIES_DIR)) {
-    fs.mkdirSync(COOKIES_DIR, { recursive: true })
+    fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 }) // Permissões restritas
   }
 
   let cookiesCreated = 0
 
-  // 🔵 COOKIES GOOGLE (para YouTube + Twitter + Reddit)
+  // Cookies Google
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -45,13 +334,16 @@ function createSecureCookieFiles() {
       const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      fs.writeFileSync(filepath, cookieContent)
-      console.log(`✅ Cookie Google ${i} criado: ${filename}`)
-      cookiesCreated++
+      // Validar conteúdo do cookie
+      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 }) // Permissões restritas
+        console.log(`✅ Cookie Google ${i} criado: ${filename}`)
+        cookiesCreated++
+      }
     }
   }
 
-  // 📸 COOKIES INSTAGRAM
+  // Cookies Instagram
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -60,24 +352,11 @@ function createSecureCookieFiles() {
       const filename = `instagram_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      fs.writeFileSync(filepath, cookieContent)
-      console.log(`✅ Cookie Instagram ${i} criado: ${filename}`)
-      cookiesCreated++
-    }
-  }
-
-  // 📘 COOKIES FACEBOOK (opcional)
-  for (let i = 1; i <= 3; i++) {
-    const envVar = `FACEBOOK_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      const filename = `facebook_conta${i.toString().padStart(2, "0")}.txt`
-      const filepath = path.join(COOKIES_DIR, filename)
-
-      fs.writeFileSync(filepath, cookieContent)
-      console.log(`✅ Cookie Facebook ${i} criado: ${filename}`)
-      cookiesCreated++
+      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
+        console.log(`✅ Cookie Instagram ${i} criado: ${filename}`)
+        cookiesCreated++
+      }
     }
   }
 
@@ -85,85 +364,32 @@ function createSecureCookieFiles() {
   return cookiesCreated
 }
 
-// 🍪 POOLS DE COOKIES ORGANIZADOS POR PLATAFORMA (NOVO)
+// Pools de cookies
 let googleCookiePool = []
 let instagramCookiePool = []
-let facebookCookiePool = []
-let generalCookiePool = [] // Para compatibilidade com código existente
-
-// 🍪 CARREGAR E GERENCIAR O POOL DE COOKIES (MELHORADO)
-let currentCookieIndex = 0
+let generalCookiePool = []
 
 function loadCookiePool() {
   try {
     if (!fs.existsSync(COOKIES_DIR)) {
       fs.mkdirSync(COOKIES_DIR, { recursive: true })
-      console.log("📁 Diretório de cookies criado:", COOKIES_DIR)
       return
     }
 
     const files = fs.readdirSync(COOKIES_DIR).filter((file) => file.endsWith(".txt"))
 
-    // 🔵 SEPARAR COOKIES POR PLATAFORMA
     googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
     instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
-    facebookCookiePool = files.filter((f) => f.startsWith("facebook_")).map((f) => path.join(COOKIES_DIR, f))
-
-    // Pool geral para compatibilidade
     generalCookiePool = files.map((file) => path.join(COOKIES_DIR, file))
 
-    console.log(`🔵 Google cookies carregados: ${googleCookiePool.length}`)
-    console.log(`📸 Instagram cookies carregados: ${instagramCookiePool.length}`)
-    console.log(`📘 Facebook cookies carregados: ${facebookCookiePool.length}`)
-    console.log(`🍪 Total de cookies: ${generalCookiePool.length}`)
-
-    if (generalCookiePool.length > 0) {
-      console.log(`🍪 ${generalCookiePool.length} arquivos de cookie carregados com sucesso!`)
-    } else {
-      console.warn("⚠️ Nenhum cookie encontrado. Adicione cookies via environment variables.")
-    }
+    console.log(`🔵 Google cookies: ${googleCookiePool.length}`)
+    console.log(`📸 Instagram cookies: ${instagramCookiePool.length}`)
+    console.log(`🍪 Total cookies: ${generalCookiePool.length}`)
   } catch (error) {
-    console.error("❌ Erro ao carregar pool de cookies:", error)
+    console.error("❌ Erro ao carregar cookies:", error)
   }
 }
 
-// 🎯 NOVO: SELETOR INTELIGENTE DE COOKIE POR PLATAFORMA
-function getSmartCookie(platform) {
-  switch (platform.toLowerCase()) {
-    case "youtube":
-    case "twitter":
-    case "reddit":
-      return getRandomFromPool(googleCookiePool)
-
-    case "instagram":
-      return getRandomFromPool(instagramCookiePool)
-
-    case "facebook":
-      return getRandomFromPool(facebookCookiePool)
-
-    case "tiktok":
-    default:
-      // TikTok funciona sem cookies, mas se tiver cookies gerais, usar
-      return getRandomFromPool(generalCookiePool)
-  }
-}
-
-function getRandomFromPool(pool) {
-  if (pool.length === 0) return null
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-
-// Função para obter o próximo cookie do pool (rotação) - MANTIDA PARA COMPATIBILIDADE
-function getNextCookie() {
-  if (generalCookiePool.length === 0) {
-    return null
-  }
-  const cookieFile = generalCookiePool[currentCookieIndex]
-  currentCookieIndex = (currentCookieIndex + 1) % generalCookiePool.length
-  return cookieFile
-}
-
-// 🎯 DETECTAR PLATAFORMA PARA OTIMIZAÇÕES ESPECÍFICAS
 function detectPlatform(url) {
   try {
     const hostname = new URL(url).hostname.toLowerCase()
@@ -179,53 +405,142 @@ function detectPlatform(url) {
   }
 }
 
-// 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
-app.use(
-  cors({
-    origin: [
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "https://www.waifuconvert.com",
-      "https://waifuconvert.com",
-      "https://waifuconvert.vercel.app",
-    ],
-    credentials: true,
-  }),
-)
-
-app.use(express.json())
-
-// Criar diretórios se não existirem
-if (!fs.existsSync(DOWNLOADS)) {
-  fs.mkdirSync(DOWNLOADS, { recursive: true })
-  console.log("📁 Diretório downloads criado:", DOWNLOADS)
+function getSmartCookie(platform) {
+  switch (platform.toLowerCase()) {
+    case "youtube":
+    case "twitter":
+    case "reddit":
+      return getRandomFromPool(googleCookiePool)
+    case "instagram":
+      return getRandomFromPool(instagramCookiePool)
+    default:
+      return getRandomFromPool(generalCookiePool)
+  }
 }
 
-if (!fs.existsSync(COOKIES_DIR)) {
-  fs.mkdirSync(COOKIES_DIR, { recursive: true })
-  console.log("📁 Diretório cookies criado:", COOKIES_DIR)
+function getRandomFromPool(pool) {
+  if (pool.length === 0) return null
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
-// Função para obter User-Agent aleatório
 function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🔧 FUNÇÃO MELHORADA PARA LIMPAR NOMES DE ARQUIVO
-function safeFilename(str) {
-  return (str || "WaifuConvert")
-    .replace(/[\\/:*?"<>|#]/g, "") // ← ADICIONADO # na lista de caracteres proibidos
-    .replace(/\s+/g, "_") // ← TROCAR ESPAÇOS POR UNDERSCORE
-    .replace(/[^\w\-_.()]/g, "") // ← MANTER APENAS CARACTERES SEGUROS
-    .replace(/_{2,}/g, "_") // ← REMOVER UNDERSCORES DUPLOS
-    .trim()
-    .substring(0, 60) // ← REDUZIR MAIS O TAMANHO
+function getFormatSelector(format, quality, platform) {
+  if (format === "mp3") {
+    return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
+  }
+
+  const q = Number.parseInt(quality)
+
+  if (platform === "tiktok") {
+    if (q >= 1080) return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+    if (q >= 720) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+    if (q >= 480) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+    return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+  }
+
+  if (platform === "instagram") {
+    if (q >= 1080) return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+    if (q >= 720) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+    if (q >= 480) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+    return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+  }
+
+  // Configurações padrão
+  if (q >= 1080) {
+    return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+  } else if (q >= 720) {
+    return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+  } else if (q >= 480) {
+    return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+  } else {
+    return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+  }
 }
 
-// 📁 MAPA PARA RASTREAR ARQUIVOS CRIADOS
+function buildSecureCommand(userAgent, cookieFile, platform) {
+  const baseArgs = [
+    "--user-agent",
+    userAgent,
+    "--no-playlist",
+    "--no-check-certificates",
+    "--prefer-insecure",
+    "--extractor-retries",
+    "3",
+    "--fragment-retries",
+    "3",
+    "--retry-sleep",
+    "1",
+    "--no-call-home",
+    "--geo-bypass",
+    "--add-header",
+    "Accept-Language:en-US,en;q=0.9",
+    "--add-header",
+    "Accept-Encoding:gzip, deflate",
+    "--add-header",
+    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "--add-header",
+    "Connection:keep-alive",
+    "--add-header",
+    "Upgrade-Insecure-Requests:1",
+  ]
+
+  if (platform === "tiktok") {
+    baseArgs.push("--fragment-retries", "10", "--retry-sleep", "2", "--no-part", "--concurrent-fragments", "1")
+  }
+
+  if (platform === "instagram") {
+    baseArgs.push(
+      "--sleep-interval",
+      "2",
+      "--max-sleep-interval",
+      "5",
+      "--extractor-retries",
+      "5",
+      "--fragment-retries",
+      "5",
+      "--retry-sleep",
+      "3",
+    )
+  }
+
+  if (cookieFile) {
+    baseArgs.push("--cookies", cookieFile)
+  }
+
+  return baseArgs
+}
+
+function isAuthenticationError(errorMessage) {
+  const authErrors = [
+    "requires authentication",
+    "requiring login",
+    "NSFW tweet",
+    "private video",
+    "private account",
+    "login required",
+    "sign in to confirm",
+    "cookies",
+    "Use --cookies",
+    "not a bot",
+    "captcha",
+    "verification",
+    "blocked",
+    "rate limit",
+    "requested content is not available",
+    "rate-limit reached",
+    "General metadata extraction failed",
+    "unable to extract shared data",
+  ]
+
+  return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+}
+
+// Mapa de arquivos seguro
 const fileMap = new Map()
 
-// Função para encontrar arquivo criado recentemente
 function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
   try {
     const files = fs.readdirSync(baseDir)
@@ -235,11 +550,9 @@ function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
       const fileTime = stats.birthtime.getTime()
       const timeDiff = Math.abs(fileTime - timestamp)
 
-      // Arquivo criado nos últimos 5 minutos e tem extensão correta
       return timeDiff < 300000 && extensions.some((ext) => file.toLowerCase().endsWith(ext))
     })
 
-    // Retornar o mais recente
     if (recentFiles.length > 0) {
       recentFiles.sort((a, b) => {
         const aTime = fs.statSync(path.join(baseDir, a)).birthtime.getTime()
@@ -254,7 +567,6 @@ function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
   return null
 }
 
-// Função para limpar arquivos antigos
 function cleanupOldFiles() {
   try {
     const files = fs.readdirSync(DOWNLOADS)
@@ -268,7 +580,6 @@ function cleanupOldFiles() {
         fs.unlinkSync(filePath)
         console.log("🗑️ Arquivo antigo removido:", file)
 
-        // Remover do mapa também
         for (const [key, value] of fileMap.entries()) {
           if (value.actualPath === filePath) {
             fileMap.delete(key)
@@ -282,365 +593,262 @@ function cleanupOldFiles() {
   }
 }
 
-// 🔍 FUNÇÃO MELHORADA PARA DETECTAR ERROS DE AUTENTICAÇÃO
-function isAuthenticationError(errorMessage) {
-  const authErrors = [
-    "requires authentication",
-    "requiring login",
-    "NSFW tweet",
-    "private video",
-    "private account",
-    "login required",
-    "sign in to confirm",
-    "cookies",
-    "Use --cookies",
-    "cookies-from-browser",
-    "not a bot",
-    "captcha",
-    "verification",
-    "blocked",
-    "rate limit",
-    // 📸 ERROS ESPECÍFICOS DO INSTAGRAM
-    "requested content is not available",
-    "rate-limit reached",
-    "General metadata extraction failed",
-    "unable to extract shared data",
-    "Instagram login required",
-  ]
+// CORS seguro
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://www.waifuconvert.com",
+      "https://waifuconvert.com",
+      "https://waifuconvert.vercel.app",
+    ],
+    credentials: true,
+    optionsSuccessStatus: 200,
+  }),
+)
 
-  return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+app.use(express.json({ limit: "10mb" }))
+
+// Criar diretórios
+if (!fs.existsSync(DOWNLOADS)) {
+  fs.mkdirSync(DOWNLOADS, { recursive: true, mode: 0o755 })
 }
 
-// 🎯 FUNÇÃO OTIMIZADA PARA SELETOR DE FORMATO POR PLATAFORMA
-function getFormatSelector(format, quality, platform) {
-  if (format === "mp3") {
-    return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
-  }
-
-  const q = Number.parseInt(quality)
-
-  // 🎵 CONFIGURAÇÕES ESPECÍFICAS PARA TIKTOK (CORRIGE CORRUPÇÃO)
-  if (platform === "tiktok") {
-    console.log("🎵 Aplicando configurações específicas do TikTok para evitar corrupção...")
-
-    // TikTok funciona melhor com formatos específicos e sem merge complexo
-    if (q >= 1080) {
-      return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-    } else if (q >= 720) {
-      return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-    } else if (q >= 480) {
-      return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-    } else {
-      return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-    }
-  }
-
-  // 📸 CONFIGURAÇÕES ESPECÍFICAS PARA INSTAGRAM
-  if (platform === "instagram") {
-    console.log("📸 Aplicando configurações específicas do Instagram...")
-
-    // Instagram funciona melhor com formatos simples
-    if (q >= 1080) {
-      return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-    } else if (q >= 720) {
-      return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-    } else if (q >= 480) {
-      return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-    } else {
-      return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-    }
-  }
-
-  // Configurações padrão para outras plataformas
-  if (q >= 1080) {
-    return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-  } else if (q >= 720) {
-    return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-  } else if (q >= 480) {
-    return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-  } else {
-    return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-  }
+if (!fs.existsSync(COOKIES_DIR)) {
+  fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
-// 🛡️ FUNÇÃO DE COMANDO ATUALIZADA COM OTIMIZAÇÕES POR PLATAFORMA
-function getAntiDetectionCmd(userAgent, cookieFile, platform) {
-  let cmd = `${ytDlpPath} --user-agent "${userAgent}" --no-playlist --no-check-certificates --prefer-insecure --extractor-retries 3 --fragment-retries 3 --retry-sleep 1 --no-call-home --geo-bypass --add-header "Accept-Language:en-US,en;q=0.9" --add-header "Accept-Encoding:gzip, deflate" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" --add-header "Connection:keep-alive" --add-header "Upgrade-Insecure-Requests:1" --add-header "Sec-Fetch-Dest:document" --add-header "Sec-Fetch-Mode:navigate" --add-header "Sec-Fetch-Site:none"`
-
-  // 🎵 CONFIGURAÇÕES ESPECÍFICAS PARA TIKTOK
-  if (platform === "tiktok") {
-    console.log("🎵 Aplicando configurações anti-corrupção para TikTok...")
-    // Configurações específicas para TikTok evitarem corrupção
-    cmd += ` --fragment-retries 10 --retry-sleep 2`
-    cmd += ` --http-chunk-size 10485760` // 10MB chunks para evitar fragmentação
-    cmd += ` --no-part` // Não usar arquivos .part que podem corromper
-    cmd += ` --concurrent-fragments 1` // Download sequencial para TikTok
-  }
-
-  // 📸 CONFIGURAÇÕES ESPECÍFICAS PARA INSTAGRAM
-  if (platform === "instagram") {
-    console.log("📸 Aplicando configurações específicas do Instagram...")
-
-    // Instagram precisa de configurações especiais para evitar rate-limit
-    cmd += ` --sleep-interval 2 --max-sleep-interval 5` // Delay entre requests
-    cmd += ` --extractor-retries 5 --fragment-retries 5` // Mais tentativas
-    cmd += ` --retry-sleep 3` // Mais tempo entre tentativas
-
-    // Headers específicos do Instagram
-    cmd += ` --add-header "X-Requested-With:XMLHttpRequest"`
-    cmd += ` --add-header "X-Instagram-AJAX:1"`
-    cmd += ` --add-header "X-CSRFToken:missing"`
-
-    // ⚠️ FORÇAR USO DE COOKIES PARA INSTAGRAM
-    if (!cookieFile) {
-      console.warn("⚠️ Instagram REQUER cookies! Sem cookies, a taxa de sucesso será muito baixa.")
-    }
-  }
-
-  // Adiciona o cookie se um arquivo for fornecido
-  if (cookieFile) {
-    cmd += ` --cookies "${cookieFile}"`
-    console.log(`🍪 Cookie aplicado para ${platform}:`, path.basename(cookieFile))
-  }
-
-  return cmd
-}
-
-setInterval(cleanupOldFiles, 30 * 60 * 1000)
-
-// Rota principal de download/conversão
+// 🛡️ ROTA PRINCIPAL DE DOWNLOAD SEGURA
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
-  const randomUA = getRandomUserAgent()
 
   try {
-    const { url, format, quality, platform } = req.body
+    // 🛡️ Verificar limite de downloads simultâneos
+    if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+      return res.status(429).json({
+        error: "Servidor ocupado no momento. Tente novamente em 1-2 minutos.",
+        type: "server_busy",
+        tip: "Muitas pessoas estão usando o serviço agora. 😊",
+      })
+    }
 
-    // 🎯 DETECTAR PLATAFORMA AUTOMATICAMENTE
+    const { url, format, quality } = req.body
+
+    // 🛡️ Validar parâmetros
+    const validationErrors = validateDownloadParams(url, format, quality)
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        error: "Parâmetros inválidos",
+        details: validationErrors,
+      })
+    }
+
+    activeDownloads++
+    console.log(`🚀 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+
     const detectedPlatform = detectPlatform(url)
-
-    // 🍪 NOVO: USAR COOKIE INTELIGENTE POR PLATAFORMA
     const cookieFile = getSmartCookie(detectedPlatform)
+    const randomUA = getRandomUserAgent()
+    const uniqueId = crypto.randomBytes(8).toString("hex")
 
-    console.log("🎯 Nova requisição:", { url, format, quality, platform: detectedPlatform })
-    console.log("🕵️ User-Agent:", randomUA.substring(0, 50) + "...")
+    console.log("🎯 Nova requisição segura:", {
+      url: url.substring(0, 50) + "...",
+      format,
+      quality,
+      platform: detectedPlatform,
+    })
 
-    if (cookieFile) {
-      console.log(`🍪 Usando cookie ${detectedPlatform}:`, path.basename(cookieFile))
-    } else {
-      console.warn(`⚠️ Nenhum cookie disponível para ${detectedPlatform}`)
+    // 🛡️ Obter informações do vídeo com comando seguro
+    const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
 
-      // 📸 AVISO ESPECÍFICO PARA INSTAGRAM SEM COOKIES
-      if (detectedPlatform === "instagram") {
-        console.warn("🚨 INSTAGRAM SEM COOKIES: Taxa de sucesso será muito baixa!")
-      }
-    }
-
-    if (!url || !format) {
-      console.error("❌ Faltando campos no request:", req.body)
-      return res.status(400).json({ error: "URL e formato são obrigatórios" })
-    }
-
-    const uniqueId = Date.now() + "-" + Math.floor(Math.random() * 100000)
-    const ext = format === "mp3" ? "mp3" : "mp4"
-    const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
-
-    console.log("📋 Obtendo informações do vídeo...")
-
-    // Comando base com proteções e o cookie selecionado
-    const baseCmd = getAntiDetectionCmd(randomUA, cookieFile, detectedPlatform)
-
-    const jsonCmd = `${baseCmd} -j "${url}"`
-
-    console.log("🚀 Executando comando:", jsonCmd)
-
-    exec(jsonCmd, { timeout: 45000 }, (jsonErr, jsonStdout, jsonStderr) => {
-      // ← Timeout aumentado para Instagram
-      if (jsonErr) {
-        console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
-        if (isAuthenticationError(jsonStderr || jsonStdout)) {
-          console.log("🔒 Conteúdo requer autenticação")
-
-          // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
-          if (detectedPlatform === "instagram") {
-            return res.status(400).json({
-              error: "Instagram requer login. Adicione cookies do Instagram via environment variables.",
-              type: "instagram_auth_required",
-              suggestion: "Configure INSTAGRAM_COOKIE_01, INSTAGRAM_COOKIE_02, etc. no Railway.",
-              platform: "instagram",
-            })
-          }
-
-          return res.status(400).json({
-            error: "Este conteúdo é privado ou requer login. Configure cookies via environment variables.",
-            type: "private_content",
-            suggestion: "Adicione cookies apropriados no Railway Dashboard.",
-          })
-        }
-        return res.status(500).json({ error: "Falha ao obter informações do vídeo" })
-      }
+    try {
+      const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
+        timeout: 45000,
+      })
 
       let data
       try {
         const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
         if (!jsonLine) throw new Error("Nenhuma linha JSON encontrada")
         data = JSON.parse(jsonLine)
-        console.log("✅ Informações obtidas:", data.title)
       } catch (e) {
         console.error("❌ Erro ao parsear JSON:", e)
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
-      const safeTitle = safeFilename(data.title)
-      const outputFilename = `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
-      const outputPath = path.join(DOWNLOADS, outputFilename)
+      // 🛡️ Verificar tamanho do arquivo
+      if (data.filesize && data.filesize > MAX_FILE_SIZE) {
+        return res.status(400).json({
+          error: "Arquivo muito grande. Máximo permitido: 1GB",
+          type: "file_too_large",
+        })
+      }
 
-      console.log("📁 Nome do arquivo limpo:", outputFilename)
-      console.log("📁 Caminho completo:", outputPath)
+      const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
+      const outputPath = path.join(DOWNLOADS, safeTitle)
 
-      let cmd
+      console.log("📁 Arquivo seguro:", safeTitle)
+
+      // 🛡️ Construir comando de download seguro
+      let downloadArgs
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
         const formatSelector = getFormatSelector("mp3", quality, detectedPlatform)
-        cmd = `${baseCmd} -f "${formatSelector}" --extract-audio --audio-format mp3 --audio-quality ${q}k --add-metadata --embed-thumbnail -o "${outputPath}" "${url}"`
+        downloadArgs = [
+          ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+          "-f",
+          formatSelector,
+          "--extract-audio",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          `${q}k`,
+          "--add-metadata",
+          "--embed-thumbnail",
+          "-o",
+          outputPath,
+          url,
+        ]
       } else {
         const formatSelector = getFormatSelector("mp4", quality, detectedPlatform)
 
-        // 🎵 COMANDO ESPECÍFICO PARA TIKTOK (EVITA CORRUPÇÃO)
-        if (detectedPlatform === "tiktok") {
-          console.log("🎵 Usando comando otimizado para TikTok...")
-          // Para TikTok, não usar merge complexo que pode corromper
-          cmd = `${baseCmd} -f "${formatSelector}" --add-metadata -o "${outputPath}" "${url}"`
-        }
-        // 📸 COMANDO ESPECÍFICO PARA INSTAGRAM
-        else if (detectedPlatform === "instagram") {
-          console.log("📸 Usando comando otimizado para Instagram...")
-          // Para Instagram, usar comando simples sem merge complexo
-          cmd = `${baseCmd} -f "${formatSelector}" --add-metadata -o "${outputPath}" "${url}"`
+        if (detectedPlatform === "tiktok" || detectedPlatform === "instagram") {
+          downloadArgs = [
+            ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+            "-f",
+            formatSelector,
+            "--add-metadata",
+            "-o",
+            outputPath,
+            url,
+          ]
         } else {
-          // Comando padrão para outras plataformas
-          cmd = `${baseCmd} -f "${formatSelector}" --merge-output-format mp4 --add-metadata --embed-subs --write-auto-subs --sub-langs "pt,en" -o "${outputPath}" "${url}"`
+          downloadArgs = [
+            ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+            "-f",
+            formatSelector,
+            "--merge-output-format",
+            "mp4",
+            "--add-metadata",
+            "--embed-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "pt,en",
+            "-o",
+            outputPath,
+            url,
+          ]
         }
       }
 
-      console.log("🚀 Iniciando download/conversão...")
-      console.log("📝 Plataforma detectada:", detectedPlatform)
+      console.log("🚀 Iniciando download seguro...")
 
-      exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
-        if (error) {
-          console.error("❌ Erro no download:", stderr2 || stdout2)
-          if (isAuthenticationError(stderr2 || stdout2)) {
-            // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
-            if (detectedPlatform === "instagram") {
-              return res.status(400).json({
-                error: "Instagram bloqueou o acesso. Configure cookies via environment variables.",
-                type: "instagram_blocked",
-                suggestion: "Adicione INSTAGRAM_COOKIE_01, INSTAGRAM_COOKIE_02, etc. no Railway.",
-                platform: "instagram",
-              })
-            }
-
-            return res.status(400).json({
-              error: "Conteúdo privado ou bloqueado. Configure cookies apropriados.",
-              type: "private_content",
-            })
-          }
-          return res.status(500).json({ error: "Falha no download/conversão" })
-        }
-
-        // 🔍 VERIFICAR ARQUIVO CRIADO
-        let finalFilePath = outputPath
-        if (!fs.existsSync(finalFilePath)) {
-          finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${ext}`])
-          if (!finalFilePath) {
-            return res.status(500).json({ error: "Arquivo não foi criado" })
-          }
-        }
-
-        const actualFilename = path.basename(finalFilePath)
-        const stats = fs.statSync(finalFilePath)
-
-        if (stats.size < 1000) {
-          return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
-        }
-
-        // 📁 MAPEAR ARQUIVO PARA DOWNLOAD SEGURO
-        const downloadKey = `download_${uniqueId}.${ext}`
-        fileMap.set(downloadKey, {
-          actualPath: finalFilePath,
-          actualFilename: actualFilename,
-          userFriendlyName: `${safeTitle} - ${qualLabel}.${ext}`,
-          size: stats.size,
-          created: Date.now(),
-        })
-
-        console.log("✅ Download concluído:", {
-          platform: detectedPlatform,
-          downloadKey: downloadKey,
-          actualFilename: actualFilename,
-          userFriendlyName: `${safeTitle} - ${qualLabel}.${ext}`,
-          size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
-          path: finalFilePath,
-          used_cookies: !!cookieFile,
-          cookie_type: cookieFile ? path.basename(cookieFile).split("_")[0] : "none",
-        })
-
-        res.json({
-          file: `/downloads/${downloadKey}`, // ← USAR CHAVE SEGURA
-          filename: `${safeTitle} - ${qualLabel}.${ext}`,
-          size: stats.size,
-          title: data.title,
-          duration: data.duration,
-          platform: detectedPlatform,
-          quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-          used_cookies: !!cookieFile,
-          cookie_type: cookieFile ? path.basename(cookieFile).split("_")[0] : "none",
-        })
+      const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
+        timeout: 600000,
       })
-    })
-  } catch (e) {
-    console.error("❌ Erro inesperado:", e)
+
+      // 🛡️ Verificar arquivo criado
+      let finalFilePath = outputPath
+      if (!fs.existsSync(finalFilePath)) {
+        finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
+        if (!finalFilePath) {
+          return res.status(500).json({ error: "Arquivo não foi criado" })
+        }
+      }
+
+      const actualFilename = path.basename(finalFilePath)
+      const stats = fs.statSync(finalFilePath)
+
+      if (stats.size < 1000) {
+        return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
+      }
+
+      // 🛡️ Mapear arquivo com chave segura
+      const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
+      fileMap.set(downloadKey, {
+        actualPath: finalFilePath,
+        actualFilename: actualFilename,
+        userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+        size: stats.size,
+        created: Date.now(),
+      })
+
+      console.log("✅ Download seguro concluído:", {
+        platform: detectedPlatform,
+        downloadKey: downloadKey,
+        size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
+        used_cookies: !!cookieFile,
+      })
+
+      res.json({
+        file: `/downloads/${downloadKey}`,
+        filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+        size: stats.size,
+        title: data.title,
+        duration: data.duration,
+        platform: detectedPlatform,
+        quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
+        used_cookies: !!cookieFile,
+      })
+    } catch (error) {
+      console.error("❌ Erro no download:", error.message)
+
+      if (isAuthenticationError(error.message)) {
+        if (detectedPlatform === "instagram") {
+          return res.status(400).json({
+            error: "Instagram requer login. Configure cookies via environment variables.",
+            type: "instagram_auth_required",
+            platform: "instagram",
+          })
+        }
+        return res.status(400).json({
+          error: "Conteúdo privado ou requer login.",
+          type: "private_content",
+        })
+      }
+
+      return res.status(500).json({ error: "Falha no download/conversão" })
+    }
+  } catch (error) {
+    console.error("❌ Erro inesperado:", error)
     res.status(500).json({ error: "Erro interno do servidor" })
+  } finally {
+    activeDownloads--
+    console.log(`📉 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
   }
 })
 
-// 📥 ROTA DE DOWNLOAD COMPLETAMENTE REESCRITA
+// 🛡️ ROTA DE DOWNLOAD SEGURA
 app.get("/downloads/:fileKey", (req, res) => {
-  const fileKey = req.params.fileKey
+  const fileKey = sanitizeInput(req.params.fileKey, 100)
 
-  console.log("📥 Solicitação de download:", fileKey)
+  console.log("📥 Download solicitado:", fileKey)
 
-  // 🔍 BUSCAR NO MAPA DE ARQUIVOS
   const fileInfo = fileMap.get(fileKey)
-
   if (!fileInfo) {
-    console.error("❌ Chave de arquivo não encontrada:", fileKey)
     return res.status(404).json({ error: "Arquivo não encontrado ou expirado" })
   }
 
   const { actualPath, userFriendlyName, size } = fileInfo
 
-  // Verificar se arquivo ainda existe no disco
   if (!fs.existsSync(actualPath)) {
-    console.error("❌ Arquivo físico não encontrado:", actualPath)
-    fileMap.delete(fileKey) // Limpar do mapa
+    fileMap.delete(fileKey)
     return res.status(404).json({ error: "Arquivo não encontrado no disco" })
   }
 
   try {
-    // Headers otimizados para forçar download
+    // 🛡️ Headers seguros para download
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
     res.setHeader("Pragma", "no-cache")
     res.setHeader("Expires", "0")
-    res.setHeader("Accept-Ranges", "bytes")
+    res.setHeader("X-Content-Type-Options", "nosniff")
 
-    console.log("✅ Enviando arquivo:", userFriendlyName, `(${(size / 1024 / 1024).toFixed(2)} MB)`)
-    console.log("📁 Caminho real:", actualPath)
+    console.log("✅ Enviando arquivo seguro:", userFriendlyName)
 
-    // Usar stream para arquivos grandes
     const fileStream = fs.createReadStream(actualPath)
 
     fileStream.on("error", (error) => {
@@ -648,10 +856,6 @@ app.get("/downloads/:fileKey", (req, res) => {
       if (!res.headersSent) {
         res.status(500).json({ error: "Erro ao ler arquivo" })
       }
-    })
-
-    fileStream.on("end", () => {
-      console.log("✅ Download concluído com sucesso:", userFriendlyName)
     })
 
     fileStream.pipe(res)
@@ -663,204 +867,125 @@ app.get("/downloads/:fileKey", (req, res) => {
   }
 })
 
-// Rota para verificar status do servidor
+// 🛡️ ROTA DE HEALTH CHECK SEGURA
 app.get("/health", (req, res) => {
   const stats = {
-    status: "OK - SECURE COOKIES",
-    version: "4.0.0 - SECURE EDITION",
+    status: "OK - SECURE",
+    version: "5.0.0 - SECURITY HARDENED",
     timestamp: new Date().toISOString(),
-    downloads_dir: DOWNLOADS,
-    cookies_dir: COOKIES_DIR,
+    security_features: [
+      "✅ Input validation",
+      "✅ Command injection protection",
+      "✅ Rate limiting",
+      "✅ Secure file handling",
+      "✅ Domain whitelist",
+      "✅ Resource limits",
+      "✅ Helmet security headers",
+    ],
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
-      facebook: facebookCookiePool.length,
       total: generalCookiePool.length,
     },
-    current_cookie_index: currentCookieIndex,
-    yt_dlp_path: ytDlpPath,
-    user_agents_count: userAgents.length,
+    active_downloads: activeDownloads,
+    max_concurrent: MAX_CONCURRENT_DOWNLOADS,
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
-    security: {
-      cookies_from_env: "✅ Environment Variables",
-      github_safe: "✅ No cookies in repository",
-      runtime_creation: "✅ Files created at startup",
-      platform_specific: "✅ Smart cookie selection",
-    },
-    optimizations: {
-      tiktok: "enabled - anti-corruption",
-      instagram: "enabled - requires cookies",
-      twitter: "enabled",
-      filename_mapping: "enabled",
-      smart_cookies: "enabled",
-    },
-    active_files: fileMap.size,
   }
-
-  // Verificar se yt-dlp existe
-  stats.yt_dlp_status = "Using global yt-dlp"
 
   res.json(stats)
 })
 
-// Rota para listar arquivos (debug)
-app.get("/files", (req, res) => {
-  try {
-    const diskFiles = fs.readdirSync(DOWNLOADS).map((file) => {
-      const filePath = path.join(DOWNLOADS, file)
-      const stats = fs.statSync(filePath)
-      return {
-        name: file,
-        size: stats.size,
-        size_mb: (stats.size / 1024 / 1024).toFixed(2),
-        created: stats.birthtime,
-        modified: stats.mtime,
-        age_minutes: Math.floor((Date.now() - stats.birthtime.getTime()) / 60000),
-      }
-    })
-
-    const mappedFiles = Array.from(fileMap.entries()).map(([key, info]) => ({
-      key,
-      userFriendlyName: info.userFriendlyName,
-      actualFilename: info.actualFilename,
-      size_mb: (info.size / 1024 / 1024).toFixed(2),
-      age_minutes: Math.floor((Date.now() - info.created) / 60000),
-    }))
-
-    res.json({
-      disk_files: diskFiles,
-      mapped_files: mappedFiles,
-      total_disk_files: diskFiles.length,
-      total_mapped_files: mappedFiles.length,
-      total_size_mb: diskFiles.reduce((sum, f) => sum + Number.parseFloat(f.size_mb), 0).toFixed(2),
-    })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
-
-// 🍪 NOVA ROTA: Verificar cookies carregados
-app.get("/cookies", (req, res) => {
-  try {
-    const cookieStats = {
-      google: {
-        count: googleCookiePool.length,
-        files: googleCookiePool.map((f) => path.basename(f)),
-        platforms: ["YouTube", "Twitter", "Reddit"],
-      },
-      instagram: {
-        count: instagramCookiePool.length,
-        files: instagramCookiePool.map((f) => path.basename(f)),
-        platforms: ["Instagram"],
-      },
-      facebook: {
-        count: facebookCookiePool.length,
-        files: facebookCookiePool.map((f) => path.basename(f)),
-        platforms: ["Facebook"],
-      },
-      total: generalCookiePool.length,
-      security: "✅ Loaded from environment variables",
-    }
-
-    res.json(cookieStats)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
-
-// Rota para testar User-Agent (debug)
-app.get("/test-ua", (req, res) => {
-  res.json({
-    current_ua: getRandomUserAgent(),
-    available_uas: userAgents.length,
-    sample_uas: userAgents.slice(0, 2),
-  })
-})
-
-// 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
+// 🛡️ ROTA RAIZ SEGURA
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURE COOKIES EDITION!",
-    version: "4.0.0",
-    status: "online - secure cookies active",
-    cookies_loaded: {
-      google: googleCookiePool.length,
-      instagram: instagramCookiePool.length,
-      facebook: facebookCookiePool.length,
-      total: generalCookiePool.length,
-    },
-    platform_support: {
-      tiktok: "✅ Working perfectly (no cookies needed)",
-      twitter: `✅ Working with ${googleCookiePool.length} Google cookies`,
-      instagram: `✅ Working with ${instagramCookiePool.length} Instagram cookies`,
-      youtube: `✅ Working with ${googleCookiePool.length} Google cookies`,
-      reddit: `✅ Working with ${googleCookiePool.length} Google cookies`,
-      facebook: `✅ Working with ${facebookCookiePool.length} Facebook cookies`,
-    },
-    security_features: [
-      "✅ Cookies from environment variables",
-      "✅ Runtime file creation",
-      "✅ Platform-specific cookie pools",
-      "✅ No sensitive data in repository",
-      "✅ Smart cookie selection",
+    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED!",
+    version: "5.0.0",
+    status: "online - security active",
+    security_level: "HIGH",
+    features: [
+      "✅ Input validation & sanitization",
+      "✅ Command injection protection",
+      "✅ Rate limiting (20 downloads/10min)",
+      "✅ Concurrent download limits",
+      "✅ Domain whitelist protection",
+      "✅ Secure file handling",
+      "✅ Resource usage limits",
+      "✅ Security headers (Helmet)",
+      "✅ Safe cookie management",
     ],
-    active_downloads: fileMap.size,
+    platform_support: {
+      tiktok: "✅ Working perfectly",
+      twitter: `✅ Working with ${googleCookiePool.length} cookies`,
+      instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
+      youtube: `✅ Working with ${googleCookiePool.length} cookies`,
+    },
   })
 })
 
-// Middleware de tratamento de erros
+// 🛡️ MIDDLEWARE DE TRATAMENTO DE ERROS SEGURO
 app.use((error, req, res, next) => {
-  console.error("❌ Erro não tratado:", error)
+  console.error("❌ Erro não tratado:", error.message)
+
+  // Não vazar informações sensíveis
   res.status(500).json({
     error: "Erro interno do servidor",
+    timestamp: new Date().toISOString(),
   })
 })
 
-// 🚀 INICIAR SERVIDOR
+// 🛡️ MIDDLEWARE PARA ROTAS NÃO ENCONTRADAS
+app.use("*", (req, res) => {
+  res.status(404).json({
+    error: "Rota não encontrada",
+    available_endpoints: ["/", "/health", "/download"],
+  })
+})
+
+// Limpeza automática
+setInterval(cleanupOldFiles, 30 * 60 * 1000)
+
+// 🚀 INICIAR SERVIDOR SEGURO
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURE COOKIES EDITION")
+  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED EDITION")
   console.log(`🌐 Porta: ${PORT}`)
-  console.log("📁 Diretório de downloads:", DOWNLOADS)
-  console.log("🍪 Diretório de cookies:", COOKIES_DIR)
+  console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
+  console.log("  ✅ Validação rigorosa de entrada")
+  console.log("  ✅ Proteção contra command injection")
+  console.log("  ✅ Rate limiting inteligente")
+  console.log("  ✅ Whitelist de domínios")
+  console.log("  ✅ Limites de recursos")
+  console.log("  ✅ Headers de segurança")
+  console.log("  ✅ Execução segura de comandos")
+  console.log("  ✅ Gerenciamento seguro de arquivos")
 
-  // 🛡️ 1. CRIAR COOKIES SEGUROS A PARTIR DE ENV VARS
   const cookiesCreated = createSecureCookieFiles()
-
-  // 🍪 2. CARREGAR POOLS DE COOKIES
   loadCookiePool()
 
-  console.log("🔒 SEGURANÇA ATIVADA:")
-  console.log("  ✅ Cookies criados a partir de environment variables")
-  console.log("  ✅ Nenhum cookie no GitHub")
-  console.log("  ✅ Arquivos criados em runtime")
-  console.log("  ✅ Pools organizados por plataforma")
-  console.log("  ✅ Seleção inteligente de cookies")
-
-  console.log("🛡️ Proteções ativadas:")
-  console.log("  ✅ Rotação de Cookies + Anti-detecção")
-  console.log("  ✅ TikTok: Otimizações anti-corrupção")
-  console.log("  ✅ Instagram: Suporte com cookies obrigatórios")
-  console.log("  ✅ Twitter/X: Funcionando perfeitamente")
-  console.log("  ✅ Sistema de mapeamento de arquivos")
-  console.log("  ✅ Limpeza de caracteres especiais")
-
-  console.log("🍪 COOKIES CARREGADOS:")
-  console.log(`  🔵 Google: ${googleCookiePool.length} (YouTube + Twitter + Reddit)`)
+  console.log("🍪 COOKIES SEGUROS:")
+  console.log(`  🔵 Google: ${googleCookiePool.length}`)
   console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
-  console.log(`  📘 Facebook: ${facebookCookiePool.length}`)
-  console.log(`  🎵 TikTok: Não precisa de cookies`)
-  console.log(`  📊 Total: ${generalCookiePool.length} cookies`)
-
-  console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
+  console.log(`  📊 Total: ${generalCookiePool.length}`)
 
   cleanupOldFiles()
 })
 
+// 🛡️ HANDLERS DE ERRO SEGUROS
 process.on("uncaughtException", (error) => {
-  console.error("❌ Erro não capturado:", error)
+  console.error("❌ Erro não capturado:", error.message)
+  process.exit(1)
 })
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
+})
+
+// 🛡️ GRACEFUL SHUTDOWN
+process.on("SIGTERM", () => {
+  console.log("🛑 Recebido SIGTERM, encerrando graciosamente...")
+  process.exit(0)
+})
+
+process.on("SIGINT", () => {
+  console.log("🛑 Recebido SIGINT, encerrando graciosamente...")
+  process.exit(0)
 })
