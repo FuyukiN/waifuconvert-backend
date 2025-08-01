@@ -1,8 +1,5 @@
 const express = require("express")
 const cors = require("cors")
-const helmet = require("helmet")
-const rateLimit = require("express-rate-limit")
-const validator = require("validator")
 const { exec } = require("child_process")
 const fs = require("fs")
 const path = require("path")
@@ -28,158 +25,6 @@ const userAgents = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
-
-// 🛡️ SECURITY: Headers de segurança com Helmet
-app.use(
-  helmet({
-    contentSecurityPolicy: false, // Desabilitar CSP para não quebrar downloads
-    crossOriginEmbedderPolicy: false, // Permitir downloads cross-origin
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true,
-    },
-  }),
-)
-
-// 🛡️ SECURITY: Rate Limiting inteligente
-const downloadLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutos
-  max: 25, // 25 downloads por 10 minutos (generoso)
-  message: {
-    error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
-    type: "rate_limit_exceeded",
-    retry_after: "10 minutos",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => {
-    // Bypass para desenvolvimento local
-    const ip = req.ip || req.connection.remoteAddress
-    return ip === "127.0.0.1" || ip === "::1" || ip.startsWith("192.168.") || ip.startsWith("10.")
-  },
-})
-
-// Rate limiting mais permissivo para outras rotas
-const generalLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minuto
-  max: 100, // 100 requests por minuto
-  message: {
-    error: "Muitas requisições. Tente novamente em um minuto.",
-  },
-  skip: (req) => {
-    const ip = req.ip || req.connection.remoteAddress
-    return ip === "127.0.0.1" || ip === "::1" || ip.startsWith("192.168.") || ip.startsWith("10.")
-  },
-})
-
-app.use(generalLimiter)
-
-// 🛡️ SECURITY: Logging de eventos de segurança
-function logSecurityEvent(event, details, req = null) {
-  const logData = {
-    timestamp: new Date().toISOString(),
-    event,
-    ip: req ? req.ip || req.connection.remoteAddress : "unknown",
-    userAgent: req ? req.get("User-Agent") : "unknown",
-    ...details,
-  }
-  console.warn(`🚨 SECURITY EVENT: ${event}`, logData)
-}
-
-// 🛡️ SECURITY: Validação rigorosa de URL
-function isValidUrl(url) {
-  try {
-    if (!url || typeof url !== "string") return false
-
-    // Validar com validator.js
-    if (
-      !validator.isURL(url, {
-        protocols: ["http", "https"],
-        require_protocol: true,
-        require_valid_protocol: true,
-      })
-    ) {
-      return false
-    }
-
-    const urlObj = new URL(url)
-    const hostname = urlObj.hostname.toLowerCase()
-
-    // Lista de domínios permitidos (whitelist)
-    const allowedDomains = [
-      "youtube.com",
-      "youtu.be",
-      "m.youtube.com",
-      "www.youtube.com",
-      "tiktok.com",
-      "www.tiktok.com",
-      "vm.tiktok.com",
-      "twitter.com",
-      "x.com",
-      "www.twitter.com",
-      "www.x.com",
-      "instagram.com",
-      "www.instagram.com",
-      "reddit.com",
-      "www.reddit.com",
-      "old.reddit.com",
-      "facebook.com",
-      "www.facebook.com",
-      "fb.watch",
-    ]
-
-    const isAllowed = allowedDomains.some((domain) => hostname === domain || hostname.endsWith("." + domain))
-
-    if (!isAllowed) {
-      return false
-    }
-
-    // Verificar caracteres suspeitos que podem indicar command injection
-    const suspiciousChars = [";", "&", "|", "`", "$", "(", ")", "{", "}", "<", ">"]
-    if (suspiciousChars.some((char) => url.includes(char))) {
-      return false
-    }
-
-    return true
-  } catch (error) {
-    return false
-  }
-}
-
-// 🛡️ SECURITY: Validação de input para downloads
-function validateDownloadRequest(req, res, next) {
-  const { url, format, quality } = req.body
-
-  // Validar URL
-  if (!isValidUrl(url)) {
-    logSecurityEvent("INVALID_URL_ATTEMPT", { url }, req)
-    return res.status(400).json({
-      error: "URL inválida ou não suportada",
-      type: "invalid_url",
-    })
-  }
-
-  // Validar formato
-  if (!format || !["mp3", "mp4"].includes(format)) {
-    logSecurityEvent("INVALID_FORMAT_ATTEMPT", { format }, req)
-    return res.status(400).json({
-      error: "Formato deve ser 'mp3' ou 'mp4'",
-      type: "invalid_format",
-    })
-  }
-
-  // Validar qualidade (opcional)
-  if (quality && !validator.isInt(quality.toString(), { min: 128, max: 1080 })) {
-    logSecurityEvent("INVALID_QUALITY_ATTEMPT", { quality }, req)
-    return res.status(400).json({
-      error: "Qualidade inválida",
-      type: "invalid_quality",
-    })
-  }
-
-  next()
-}
 
 // 🛡️ NOVO: CRIAR COOKIES SEGUROS A PARTIR DE ENVIRONMENT VARIABLES
 function createSecureCookieFiles() {
@@ -334,38 +179,21 @@ function detectPlatform(url) {
   }
 }
 
-// 🛡️ SECURITY: CORS dinâmico baseado no ambiente
+// 🌐 CORS ATUALIZADO PARA SEU DOMÍNIO
 app.use(
   cors({
-    origin: (origin, callback) => {
-      const allowedOrigins =
-        process.env.NODE_ENV === "production"
-          ? ["https://www.waifuconvert.com", "https://waifuconvert.com", "https://waifuconvert.vercel.app"]
-          : [
-              "http://localhost:3000",
-              "http://127.0.0.1:3000",
-              "https://www.waifuconvert.com",
-              "https://waifuconvert.com",
-              "https://waifuconvert.vercel.app",
-            ]
-
-      // Permitir requests sem origin (Postman, curl, etc.) apenas em desenvolvimento
-      if (!origin && process.env.NODE_ENV !== "production") {
-        return callback(null, true)
-      }
-
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true)
-      } else {
-        logSecurityEvent("CORS_VIOLATION", { origin })
-        callback(new Error("Não permitido pelo CORS"))
-      }
-    },
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://www.waifuconvert.com",
+      "https://waifuconvert.com",
+      "https://waifuconvert.vercel.app",
+    ],
     credentials: true,
   }),
 )
 
-app.use(express.json({ limit: "10mb" })) // Limitar tamanho do JSON
+app.use(express.json())
 
 // Criar diretórios se não existirem
 if (!fs.existsSync(DOWNLOADS)) {
@@ -580,8 +408,8 @@ function getAntiDetectionCmd(userAgent, cookieFile, platform) {
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
-// 🛡️ SECURITY: Rota principal de download/conversão com validação
-app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res) => {
+// Rota principal de download/conversão
+app.post("/download", async (req, res) => {
   const startTime = Date.now()
   const randomUA = getRandomUserAgent()
 
@@ -608,6 +436,11 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
       }
     }
 
+    if (!url || !format) {
+      console.error("❌ Faltando campos no request:", req.body)
+      return res.status(400).json({ error: "URL e formato são obrigatórios" })
+    }
+
     const uniqueId = Date.now() + "-" + Math.floor(Math.random() * 100000)
     const ext = format === "mp3" ? "mp3" : "mp4"
     const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
@@ -625,8 +458,6 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
       // ← Timeout aumentado para Instagram
       if (jsonErr) {
         console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
-        logSecurityEvent("DOWNLOAD_ERROR", { url, error: jsonStderr || jsonStdout }, req)
-
         if (isAuthenticationError(jsonStderr || jsonStdout)) {
           console.log("🔒 Conteúdo requer autenticação")
 
@@ -657,7 +488,6 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
         console.log("✅ Informações obtidas:", data.title)
       } catch (e) {
         console.error("❌ Erro ao parsear JSON:", e)
-        logSecurityEvent("JSON_PARSE_ERROR", { url, error: e.message }, req)
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
@@ -699,8 +529,6 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
       exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
-          logSecurityEvent("CONVERSION_ERROR", { url, error: stderr2 || stdout2 }, req)
-
           if (isAuthenticationError(stderr2 || stdout2)) {
             // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
             if (detectedPlatform === "instagram") {
@@ -772,29 +600,21 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
     })
   } catch (e) {
     console.error("❌ Erro inesperado:", e)
-    logSecurityEvent("UNEXPECTED_ERROR", { error: e.message }, req)
     res.status(500).json({ error: "Erro interno do servidor" })
   }
 })
 
-// 🛡️ SECURITY: Rota de download com validação rigorosa de fileKey
+// 📥 ROTA DE DOWNLOAD COMPLETAMENTE REESCRITA
 app.get("/downloads/:fileKey", (req, res) => {
   const fileKey = req.params.fileKey
 
   console.log("📥 Solicitação de download:", fileKey)
-
-  // 🛡️ SECURITY: Validar formato do fileKey para prevenir path traversal
-  if (!/^download_\d+-\d+\.(mp4|mp3)$/.test(fileKey)) {
-    logSecurityEvent("INVALID_FILE_KEY", { fileKey }, req)
-    return res.status(400).json({ error: "Chave de arquivo inválida" })
-  }
 
   // 🔍 BUSCAR NO MAPA DE ARQUIVOS
   const fileInfo = fileMap.get(fileKey)
 
   if (!fileInfo) {
     console.error("❌ Chave de arquivo não encontrada:", fileKey)
-    logSecurityEvent("FILE_KEY_NOT_FOUND", { fileKey }, req)
     return res.status(404).json({ error: "Arquivo não encontrado ou expirado" })
   }
 
@@ -837,48 +657,55 @@ app.get("/downloads/:fileKey", (req, res) => {
     fileStream.pipe(res)
   } catch (error) {
     console.error("❌ Erro na rota de download:", error)
-    logSecurityEvent("DOWNLOAD_STREAM_ERROR", { error: error.message }, req)
     if (!res.headersSent) {
       res.status(500).json({ error: "Erro interno do servidor" })
     }
   }
 })
 
-// 🛡️ SECURITY: Health check seguro (sem vazar informações sensíveis)
+// Rota para verificar status do servidor
 app.get("/health", (req, res) => {
   const stats = {
-    status: "OK - SECURE EDITION",
-    version: "4.0.0 - SECURE",
+    status: "OK - SECURE COOKIES",
+    version: "4.0.0 - SECURE EDITION",
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
+    downloads_dir: DOWNLOADS,
+    cookies_dir: COOKIES_DIR,
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
       facebook: facebookCookiePool.length,
       total: generalCookiePool.length,
     },
-    security_features: [
-      "✅ Input validation",
-      "✅ Rate limiting",
-      "✅ CORS protection",
-      "✅ Security headers",
-      "✅ Path traversal protection",
-      "✅ Command injection protection",
-      "✅ Security event logging",
-    ],
+    current_cookie_index: currentCookieIndex,
+    yt_dlp_path: ytDlpPath,
+    user_agents_count: userAgents.length,
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || "development",
+    security: {
+      cookies_from_env: "✅ Environment Variables",
+      github_safe: "✅ No cookies in repository",
+      runtime_creation: "✅ Files created at startup",
+      platform_specific: "✅ Smart cookie selection",
+    },
+    optimizations: {
+      tiktok: "enabled - anti-corruption",
+      instagram: "enabled - requires cookies",
+      twitter: "enabled",
+      filename_mapping: "enabled",
+      smart_cookies: "enabled",
+    },
     active_files: fileMap.size,
   }
+
+  // Verificar se yt-dlp existe
+  stats.yt_dlp_status = "Using global yt-dlp"
 
   res.json(stats)
 })
 
-// Rota para listar arquivos (debug) - apenas em desenvolvimento
+// Rota para listar arquivos (debug)
 app.get("/files", (req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({ error: "Endpoint não disponível em produção" })
-  }
-
   try {
     const diskFiles = fs.readdirSync(DOWNLOADS).map((file) => {
       const filePath = path.join(DOWNLOADS, file)
@@ -913,12 +740,8 @@ app.get("/files", (req, res) => {
   }
 })
 
-// 🍪 NOVA ROTA: Verificar cookies carregados - apenas em desenvolvimento
+// 🍪 NOVA ROTA: Verificar cookies carregados
 app.get("/cookies", (req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({ error: "Endpoint não disponível em produção" })
-  }
-
   try {
     const cookieStats = {
       google: {
@@ -946,12 +769,8 @@ app.get("/cookies", (req, res) => {
   }
 })
 
-// Rota para testar User-Agent (debug) - apenas em desenvolvimento
+// Rota para testar User-Agent (debug)
 app.get("/test-ua", (req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({ error: "Endpoint não disponível em produção" })
-  }
-
   res.json({
     current_ua: getRandomUserAgent(),
     available_uas: userAgents.length,
@@ -962,9 +781,9 @@ app.get("/test-ua", (req, res) => {
 // 🏠 ROTA RAIZ PARA VERIFICAR SE ESTÁ FUNCIONANDO
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURE EDITION!",
-    version: "4.0.0 - SECURE",
-    status: "online - security enhanced",
+    message: "🛡️ WaifuConvert Backend - SECURE COOKIES EDITION!",
+    version: "4.0.0",
+    status: "online - secure cookies active",
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
@@ -980,40 +799,27 @@ app.get("/", (req, res) => {
       facebook: `✅ Working with ${facebookCookiePool.length} Facebook cookies`,
     },
     security_features: [
-      "✅ Input validation & sanitization",
-      "✅ Rate limiting (25 downloads/10min)",
-      "✅ CORS protection",
-      "✅ Security headers (Helmet)",
-      "✅ Path traversal protection",
-      "✅ Command injection protection",
-      "✅ Security event logging",
-      "✅ Environment-based CORS",
-      "✅ Production endpoint restrictions",
+      "✅ Cookies from environment variables",
+      "✅ Runtime file creation",
+      "✅ Platform-specific cookie pools",
+      "✅ No sensitive data in repository",
+      "✅ Smart cookie selection",
     ],
     active_downloads: fileMap.size,
   })
 })
 
-// 🛡️ SECURITY: Middleware de tratamento de erros
+// Middleware de tratamento de erros
 app.use((error, req, res, next) => {
   console.error("❌ Erro não tratado:", error)
-  logSecurityEvent("UNHANDLED_ERROR", { error: error.message }, req)
   res.status(500).json({
     error: "Erro interno do servidor",
   })
 })
 
-// 🛡️ SECURITY: Middleware para rotas não encontradas
-app.use((req, res) => {
-  logSecurityEvent("ROUTE_NOT_FOUND", { path: req.path, method: req.method }, req)
-  res.status(404).json({
-    error: "Rota não encontrada",
-  })
-})
-
 // 🚀 INICIAR SERVIDOR
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURE EDITION")
+  console.log("🛡️ WaifuConvert Backend - SECURE COOKIES EDITION")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("📁 Diretório de downloads:", DOWNLOADS)
   console.log("🍪 Diretório de cookies:", COOKIES_DIR)
@@ -1025,15 +831,11 @@ app.listen(PORT, () => {
   loadCookiePool()
 
   console.log("🔒 SEGURANÇA ATIVADA:")
-  console.log("  ✅ Input validation & sanitization")
-  console.log("  ✅ Rate limiting (25 downloads/10min)")
-  console.log("  ✅ CORS protection")
-  console.log("  ✅ Security headers (Helmet)")
-  console.log("  ✅ Path traversal protection")
-  console.log("  ✅ Command injection protection")
-  console.log("  ✅ Security event logging")
-  console.log("  ✅ Environment-based configuration")
-  console.log("  ✅ Production endpoint restrictions")
+  console.log("  ✅ Cookies criados a partir de environment variables")
+  console.log("  ✅ Nenhum cookie no GitHub")
+  console.log("  ✅ Arquivos criados em runtime")
+  console.log("  ✅ Pools organizados por plataforma")
+  console.log("  ✅ Seleção inteligente de cookies")
 
   console.log("🛡️ Proteções ativadas:")
   console.log("  ✅ Rotação de Cookies + Anti-detecção")
@@ -1057,10 +859,8 @@ app.listen(PORT, () => {
 
 process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error)
-  logSecurityEvent("UNCAUGHT_EXCEPTION", { error: error.message })
 })
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
-  logSecurityEvent("UNHANDLED_REJECTION", { reason: reason.toString() })
 })
