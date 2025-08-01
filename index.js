@@ -1,22 +1,13 @@
 const express = require("express")
 const cors = require("cors")
-const { exec, spawn } = require("child_process")
-const fs = require("fs")
-const path = require("path")
 const helmet = require("helmet")
 const rateLimit = require("express-rate-limit")
 const validator = require("validator")
+const { exec } = require("child_process")
+const fs = require("fs")
+const path = require("path")
 
 const app = express()
-
-// 🛡️ HEADERS DE SEGURANÇA (NÃO QUEBRA NADA)
-app.use(
-  helmet({
-    contentSecurityPolicy: false, // Desabilitado para não quebrar downloads
-    crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
-)
 
 // 🌐 PORTA DINÂMICA PARA DEPLOY
 const PORT = process.env.PORT || 8080
@@ -38,78 +29,157 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
-// 🛡️ VALIDAÇÃO SEGURA DE URL (NOVA)
+// 🛡️ SECURITY: Headers de segurança com Helmet
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // Desabilitar CSP para não quebrar downloads
+    crossOriginEmbedderPolicy: false, // Permitir downloads cross-origin
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  }),
+)
+
+// 🛡️ SECURITY: Rate Limiting inteligente
+const downloadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutos
+  max: 25, // 25 downloads por 10 minutos (generoso)
+  message: {
+    error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
+    type: "rate_limit_exceeded",
+    retry_after: "10 minutos",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    // Bypass para desenvolvimento local
+    const ip = req.ip || req.connection.remoteAddress
+    return ip === "127.0.0.1" || ip === "::1" || ip.startsWith("192.168.") || ip.startsWith("10.")
+  },
+})
+
+// Rate limiting mais permissivo para outras rotas
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minuto
+  max: 100, // 100 requests por minuto
+  message: {
+    error: "Muitas requisições. Tente novamente em um minuto.",
+  },
+  skip: (req) => {
+    const ip = req.ip || req.connection.remoteAddress
+    return ip === "127.0.0.1" || ip === "::1" || ip.startsWith("192.168.") || ip.startsWith("10.")
+  },
+})
+
+app.use(generalLimiter)
+
+// 🛡️ SECURITY: Logging de eventos de segurança
+function logSecurityEvent(event, details, req = null) {
+  const logData = {
+    timestamp: new Date().toISOString(),
+    event,
+    ip: req ? req.ip || req.connection.remoteAddress : "unknown",
+    userAgent: req ? req.get("User-Agent") : "unknown",
+    ...details,
+  }
+  console.warn(`🚨 SECURITY EVENT: ${event}`, logData)
+}
+
+// 🛡️ SECURITY: Validação rigorosa de URL
 function isValidUrl(url) {
   try {
-    const parsed = new URL(url)
+    if (!url || typeof url !== "string") return false
 
-    // Lista de domínios permitidos (expandida para não quebrar funcionalidade)
+    // Validar com validator.js
+    if (
+      !validator.isURL(url, {
+        protocols: ["http", "https"],
+        require_protocol: true,
+        require_valid_protocol: true,
+      })
+    ) {
+      return false
+    }
+
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+
+    // Lista de domínios permitidos (whitelist)
     const allowedDomains = [
       "youtube.com",
       "youtu.be",
       "m.youtube.com",
+      "www.youtube.com",
       "tiktok.com",
+      "www.tiktok.com",
       "vm.tiktok.com",
-      "vt.tiktok.com",
-      "instagram.com",
-      "www.instagram.com",
       "twitter.com",
       "x.com",
-      "mobile.twitter.com",
+      "www.twitter.com",
+      "www.x.com",
+      "instagram.com",
+      "www.instagram.com",
       "reddit.com",
       "www.reddit.com",
       "old.reddit.com",
       "facebook.com",
       "www.facebook.com",
-      "m.facebook.com",
       "fb.watch",
-      "dailymotion.com",
-      "vimeo.com",
     ]
 
-    const hostname = parsed.hostname.toLowerCase()
     const isAllowed = allowedDomains.some((domain) => hostname === domain || hostname.endsWith("." + domain))
 
-    return isAllowed && (parsed.protocol === "https:" || parsed.protocol === "http:")
-  } catch {
+    if (!isAllowed) {
+      return false
+    }
+
+    // Verificar caracteres suspeitos que podem indicar command injection
+    const suspiciousChars = [";", "&", "|", "`", "$", "(", ")", "{", "}", "<", ">"]
+    if (suspiciousChars.some((char) => url.includes(char))) {
+      return false
+    }
+
+    return true
+  } catch (error) {
     return false
   }
 }
 
-// 🛡️ LOGGING DE SEGURANÇA (NOVO)
-function logSecurityEvent(event, details) {
-  console.warn(`🚨 SECURITY: ${event}`, {
-    timestamp: new Date().toISOString(),
-    ...details,
-  })
+// 🛡️ SECURITY: Validação de input para downloads
+function validateDownloadRequest(req, res, next) {
+  const { url, format, quality } = req.body
+
+  // Validar URL
+  if (!isValidUrl(url)) {
+    logSecurityEvent("INVALID_URL_ATTEMPT", { url }, req)
+    return res.status(400).json({
+      error: "URL inválida ou não suportada",
+      type: "invalid_url",
+    })
+  }
+
+  // Validar formato
+  if (!format || !["mp3", "mp4"].includes(format)) {
+    logSecurityEvent("INVALID_FORMAT_ATTEMPT", { format }, req)
+    return res.status(400).json({
+      error: "Formato deve ser 'mp3' ou 'mp4'",
+      type: "invalid_format",
+    })
+  }
+
+  // Validar qualidade (opcional)
+  if (quality && !validator.isInt(quality.toString(), { min: 128, max: 1080 })) {
+    logSecurityEvent("INVALID_QUALITY_ATTEMPT", { quality }, req)
+    return res.status(400).json({
+      error: "Qualidade inválida",
+      type: "invalid_quality",
+    })
+  }
+
+  next()
 }
-
-// 🛡️ RATE LIMITING INTELIGENTE (MAIS FLEXÍVEL)
-const downloadLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutos (reduzido)
-  max: 25, // 25 downloads por 10min (mais generoso)
-  message: {
-    error: "Muitas tentativas. Aguarde alguns minutos.",
-    retry_after: "10 minutos",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Permitir bypass para IPs locais (desenvolvimento)
-  skip: (req) => {
-    const ip = req.ip || req.connection.remoteAddress
-    return ip === "127.0.0.1" || ip === "::1" || ip?.startsWith("192.168.")
-  },
-})
-
-// Rate limiting mais suave para outras rotas
-const generalLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minuto
-  max: 100, // 100 requests por minuto
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-app.use(generalLimiter)
 
 // 🛡️ NOVO: CRIAR COOKIES SEGUROS A PARTIR DE ENVIRONMENT VARIABLES
 function createSecureCookieFiles() {
@@ -264,11 +334,10 @@ function detectPlatform(url) {
   }
 }
 
-// 🛡️ CORS SEGURO E DINÂMICO (MELHORADO)
+// 🛡️ SECURITY: CORS dinâmico baseado no ambiente
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Lista de origins permitidos baseada no ambiente
       const allowedOrigins =
         process.env.NODE_ENV === "production"
           ? ["https://www.waifuconvert.com", "https://waifuconvert.com", "https://waifuconvert.vercel.app"]
@@ -280,7 +349,7 @@ app.use(
               "https://waifuconvert.vercel.app",
             ]
 
-      // Permitir requests sem origin (Postman, curl, etc.) em desenvolvimento
+      // Permitir requests sem origin (Postman, curl, etc.) apenas em desenvolvimento
       if (!origin && process.env.NODE_ENV !== "production") {
         return callback(null, true)
       }
@@ -288,7 +357,7 @@ app.use(
       if (allowedOrigins.includes(origin)) {
         callback(null, true)
       } else {
-        logSecurityEvent("CORS_VIOLATION", { origin, ip: "unknown" })
+        logSecurityEvent("CORS_VIOLATION", { origin })
         callback(new Error("Não permitido pelo CORS"))
       }
     },
@@ -296,7 +365,7 @@ app.use(
   }),
 )
 
-app.use(express.json({ limit: "10mb" })) // Limite de payload
+app.use(express.json({ limit: "10mb" })) // Limitar tamanho do JSON
 
 // Criar diretórios se não existirem
 if (!fs.existsSync(DOWNLOADS)) {
@@ -509,42 +578,9 @@ function getAntiDetectionCmd(userAgent, cookieFile, platform) {
   return cmd
 }
 
-// 🛡️ VALIDAÇÃO DE INPUT PARA DOWNLOAD (NOVA)
-function validateDownloadRequest(req, res, next) {
-  const { url, format, quality } = req.body
-
-  // Validar URL
-  if (!url || typeof url !== "string") {
-    logSecurityEvent("INVALID_URL_TYPE", { url: typeof url, ip: req.ip })
-    return res.status(400).json({ error: "URL é obrigatória e deve ser string" })
-  }
-
-  if (!isValidUrl(url)) {
-    logSecurityEvent("INVALID_URL_DOMAIN", { url, ip: req.ip })
-    return res.status(400).json({ error: "URL não é de uma plataforma suportada" })
-  }
-
-  // Validar formato
-  if (!format || !["mp3", "mp4"].includes(format)) {
-    logSecurityEvent("INVALID_FORMAT", { format, ip: req.ip })
-    return res.status(400).json({ error: "Formato deve ser 'mp3' ou 'mp4'" })
-  }
-
-  // Validar qualidade
-  if (quality) {
-    const q = Number.parseInt(quality)
-    if (isNaN(q) || q < 128 || q > 1080) {
-      logSecurityEvent("INVALID_QUALITY", { quality, ip: req.ip })
-      return res.status(400).json({ error: "Qualidade inválida" })
-    }
-  }
-
-  next()
-}
-
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
-// 🛡️ ROTA PRINCIPAL DE DOWNLOAD/CONVERSÃO (SEGURA)
+// 🛡️ SECURITY: Rota principal de download/conversão com validação
 app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res) => {
   const startTime = Date.now()
   const randomUA = getRandomUserAgent()
@@ -589,6 +625,8 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
       // ← Timeout aumentado para Instagram
       if (jsonErr) {
         console.error("❌ Erro ao obter informações:", jsonStderr || jsonStdout)
+        logSecurityEvent("DOWNLOAD_ERROR", { url, error: jsonStderr || jsonStdout }, req)
+
         if (isAuthenticationError(jsonStderr || jsonStdout)) {
           console.log("🔒 Conteúdo requer autenticação")
 
@@ -619,6 +657,7 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
         console.log("✅ Informações obtidas:", data.title)
       } catch (e) {
         console.error("❌ Erro ao parsear JSON:", e)
+        logSecurityEvent("JSON_PARSE_ERROR", { url, error: e.message }, req)
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
@@ -660,6 +699,8 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
       exec(cmd, { timeout: 600000 }, (error, stdout2, stderr2) => {
         if (error) {
           console.error("❌ Erro no download:", stderr2 || stdout2)
+          logSecurityEvent("CONVERSION_ERROR", { url, error: stderr2 || stdout2 }, req)
+
           if (isAuthenticationError(stderr2 || stdout2)) {
             // 📸 MENSAGEM ESPECÍFICA PARA INSTAGRAM
             if (detectedPlatform === "instagram") {
@@ -731,19 +772,20 @@ app.post("/download", downloadLimiter, validateDownloadRequest, async (req, res)
     })
   } catch (e) {
     console.error("❌ Erro inesperado:", e)
+    logSecurityEvent("UNEXPECTED_ERROR", { error: e.message }, req)
     res.status(500).json({ error: "Erro interno do servidor" })
   }
 })
 
-// 🛡️ ROTA DE DOWNLOAD SEGURA (PROTEGIDA CONTRA PATH TRAVERSAL)
+// 🛡️ SECURITY: Rota de download com validação rigorosa de fileKey
 app.get("/downloads/:fileKey", (req, res) => {
   const fileKey = req.params.fileKey
 
   console.log("📥 Solicitação de download:", fileKey)
 
-  // 🛡️ VALIDAÇÃO RIGOROSA DO FILEKEY (NOVA)
+  // 🛡️ SECURITY: Validar formato do fileKey para prevenir path traversal
   if (!/^download_\d+-\d+\.(mp4|mp3)$/.test(fileKey)) {
-    logSecurityEvent("INVALID_FILEKEY", { fileKey, ip: req.ip })
+    logSecurityEvent("INVALID_FILE_KEY", { fileKey }, req)
     return res.status(400).json({ error: "Chave de arquivo inválida" })
   }
 
@@ -752,16 +794,11 @@ app.get("/downloads/:fileKey", (req, res) => {
 
   if (!fileInfo) {
     console.error("❌ Chave de arquivo não encontrada:", fileKey)
+    logSecurityEvent("FILE_KEY_NOT_FOUND", { fileKey }, req)
     return res.status(404).json({ error: "Arquivo não encontrado ou expirado" })
   }
 
   const { actualPath, userFriendlyName, size } = fileInfo
-
-  // 🛡️ VALIDAÇÃO ADICIONAL DO CAMINHO (NOVA)
-  if (!actualPath.startsWith(DOWNLOADS)) {
-    logSecurityEvent("PATH_TRAVERSAL_ATTEMPT", { actualPath, ip: req.ip })
-    return res.status(403).json({ error: "Acesso negado" })
-  }
 
   // Verificar se arquivo ainda existe no disco
   if (!fs.existsSync(actualPath)) {
@@ -800,54 +837,48 @@ app.get("/downloads/:fileKey", (req, res) => {
     fileStream.pipe(res)
   } catch (error) {
     console.error("❌ Erro na rota de download:", error)
+    logSecurityEvent("DOWNLOAD_STREAM_ERROR", { error: error.message }, req)
     if (!res.headersSent) {
       res.status(500).json({ error: "Erro interno do servidor" })
     }
   }
 })
 
-// 🛡️ ROTA DE HEALTH CHECK SEGURA (SEM VAZAR INFORMAÇÕES)
+// 🛡️ SECURITY: Health check seguro (sem vazar informações sensíveis)
 app.get("/health", (req, res) => {
   const stats = {
     status: "OK - SECURE EDITION",
     version: "4.0.0 - SECURE",
     timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || "development",
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
       facebook: facebookCookiePool.length,
       total: generalCookiePool.length,
     },
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
-    security: {
-      cookies_from_env: "✅ Environment Variables",
-      github_safe: "✅ No cookies in repository",
-      runtime_creation: "✅ Files created at startup",
-      platform_specific: "✅ Smart cookie selection",
-      rate_limiting: "✅ Active",
-      input_validation: "✅ Active",
-      cors_protection: "✅ Active",
-      path_traversal_protection: "✅ Active",
-    },
-    optimizations: {
-      tiktok: "enabled - anti-corruption",
-      instagram: "enabled - requires cookies",
-      twitter: "enabled",
-      filename_mapping: "enabled",
-      smart_cookies: "enabled",
-    },
+    security_features: [
+      "✅ Input validation",
+      "✅ Rate limiting",
+      "✅ CORS protection",
+      "✅ Security headers",
+      "✅ Path traversal protection",
+      "✅ Command injection protection",
+      "✅ Security event logging",
+    ],
     active_files: fileMap.size,
   }
-
-  // Verificar se yt-dlp existe (sem vazar path)
-  stats.yt_dlp_status = "Available"
 
   res.json(stats)
 })
 
-// Rota para listar arquivos (debug) - MANTIDA
+// Rota para listar arquivos (debug) - apenas em desenvolvimento
 app.get("/files", (req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(403).json({ error: "Endpoint não disponível em produção" })
+  }
+
   try {
     const diskFiles = fs.readdirSync(DOWNLOADS).map((file) => {
       const filePath = path.join(DOWNLOADS, file)
@@ -882,8 +913,12 @@ app.get("/files", (req, res) => {
   }
 })
 
-// 🍪 NOVA ROTA: Verificar cookies carregados
+// 🍪 NOVA ROTA: Verificar cookies carregados - apenas em desenvolvimento
 app.get("/cookies", (req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(403).json({ error: "Endpoint não disponível em produção" })
+  }
+
   try {
     const cookieStats = {
       google: {
@@ -911,8 +946,12 @@ app.get("/cookies", (req, res) => {
   }
 })
 
-// Rota para testar User-Agent (debug)
+// Rota para testar User-Agent (debug) - apenas em desenvolvimento
 app.get("/test-ua", (req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(403).json({ error: "Endpoint não disponível em produção" })
+  }
+
   res.json({
     current_ua: getRandomUserAgent(),
     available_uas: userAgents.length,
@@ -925,7 +964,7 @@ app.get("/", (req, res) => {
   res.json({
     message: "🛡️ WaifuConvert Backend - SECURE EDITION!",
     version: "4.0.0 - SECURE",
-    status: "online - all security features active",
+    status: "online - security enhanced",
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
@@ -941,40 +980,34 @@ app.get("/", (req, res) => {
       facebook: `✅ Working with ${facebookCookiePool.length} Facebook cookies`,
     },
     security_features: [
-      "✅ Command injection protection",
-      "✅ Path traversal protection",
+      "✅ Input validation & sanitization",
       "✅ Rate limiting (25 downloads/10min)",
-      "✅ Input validation",
       "✅ CORS protection",
-      "✅ Security headers",
+      "✅ Security headers (Helmet)",
+      "✅ Path traversal protection",
+      "✅ Command injection protection",
       "✅ Security event logging",
-      "✅ Cookies from environment variables",
-      "✅ Runtime file creation",
-      "✅ Platform-specific cookie pools",
-      "✅ No sensitive data in repository",
-      "✅ Smart cookie selection",
+      "✅ Environment-based CORS",
+      "✅ Production endpoint restrictions",
     ],
     active_downloads: fileMap.size,
   })
 })
 
-// 🛡️ MIDDLEWARE DE TRATAMENTO DE ERROS SEGURO
+// 🛡️ SECURITY: Middleware de tratamento de erros
 app.use((error, req, res, next) => {
   console.error("❌ Erro não tratado:", error)
-
-  // Log do evento de segurança se for erro suspeito
-  if (error.message.includes("CORS") || error.message.includes("validation")) {
-    logSecurityEvent("MIDDLEWARE_ERROR", {
-      error: error.message,
-      ip: req.ip,
-      url: req.url,
-    })
-  }
-
+  logSecurityEvent("UNHANDLED_ERROR", { error: error.message }, req)
   res.status(500).json({
     error: "Erro interno do servidor",
-    // Não vazar detalhes do erro em produção
-    ...(process.env.NODE_ENV !== "production" && { details: error.message }),
+  })
+})
+
+// 🛡️ SECURITY: Middleware para rotas não encontradas
+app.use((req, res) => {
+  logSecurityEvent("ROUTE_NOT_FOUND", { path: req.path, method: req.method }, req)
+  res.status(404).json({
+    error: "Rota não encontrada",
   })
 })
 
@@ -992,18 +1025,15 @@ app.listen(PORT, () => {
   loadCookiePool()
 
   console.log("🔒 SEGURANÇA ATIVADA:")
-  console.log("  ✅ Command injection protection")
-  console.log("  ✅ Path traversal protection")
+  console.log("  ✅ Input validation & sanitization")
   console.log("  ✅ Rate limiting (25 downloads/10min)")
-  console.log("  ✅ Input validation")
   console.log("  ✅ CORS protection")
   console.log("  ✅ Security headers (Helmet)")
+  console.log("  ✅ Path traversal protection")
+  console.log("  ✅ Command injection protection")
   console.log("  ✅ Security event logging")
-  console.log("  ✅ Cookies criados a partir de environment variables")
-  console.log("  ✅ Nenhum cookie no GitHub")
-  console.log("  ✅ Arquivos criados em runtime")
-  console.log("  ✅ Pools organizados por plataforma")
-  console.log("  ✅ Seleção inteligente de cookies")
+  console.log("  ✅ Environment-based configuration")
+  console.log("  ✅ Production endpoint restrictions")
 
   console.log("🛡️ Proteções ativadas:")
   console.log("  ✅ Rotação de Cookies + Anti-detecção")
@@ -1027,8 +1057,10 @@ app.listen(PORT, () => {
 
 process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error)
+  logSecurityEvent("UNCAUGHT_EXCEPTION", { error: error.message })
 })
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada:", reason)
+  logSecurityEvent("UNHANDLED_REJECTION", { reason: reason.toString() })
 })
