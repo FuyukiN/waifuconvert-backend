@@ -1,7 +1,7 @@
 {
   "name": "waifuconvert-backend",
-  "version": "2.0.0",
-  "description": "WaifuConvert Backend - Railway Optimized",
+  "version": "4.0.0",
+  "description": "WaifuConvert Backend - Secure Edition",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -10,11 +10,15 @@
     "start": "node index.js",
     "lint": "echo 'No linting configured'",
     "test": "node --version && python3 --version && yt-dlp --version",
-    "health": "curl -f http://localhost:8080/health || exit 1"
+    "health": "curl -f http://localhost:8080/health || exit 1",
+    "security-check": "npm audit --audit-level moderate"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "validator": "^13.11.0"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -26,7 +30,10 @@
     "mp4-converter",
     "yt-dlp",
     "waifuconvert",
-    "railway"
+    "railway",
+    "secure",
+    "rate-limiting",
+    "validation"
   ],
   "author": "WaifuConvert",
   "license": "MIT"
