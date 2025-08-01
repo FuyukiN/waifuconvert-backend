@@ -1,15 +1,15 @@
 {
   "name": "waifuconvert-backend",
-  "version": "4.0.0",
-  "description": "WaifuConvert Backend - Secure Edition",
+  "version": "5.0.0",
+  "description": "WaifuConvert Backend - Security Hardened Edition",
   "private": true,
   "main": "index.js",
   "scripts": {
     "dev": "node index.js",
-    "build": "echo 'Build completed'",
+    "build": "echo 'Build completed - Backend ready'",
     "start": "node index.js",
     "lint": "echo 'No linting configured'",
-    "test": "node --version && python3 --version && yt-dlp --version",
+    "test": "node --version && yt-dlp --version",
     "health": "curl -f http://localhost:8080/health || exit 1",
     "security-check": "npm audit --audit-level moderate"
   },
@@ -21,7 +21,8 @@
     "validator": "^13.11.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "keywords": [
     "video-converter",
@@ -33,5 +34,19 @@
     "railway",
     "secure",
     "rate-limiting",
-    "validation"
+    "validation",
+    "tiktok-downloader",
+    "twitter-downloader",
+    "instagram-downloader"
   ],
+  "author": "WaifuConvert Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "private"
+  },
+  "bugs": {
+    "url": "private"
+  },
+  "homepage": "https://waifuconvert.com"
+}
