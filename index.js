@@ -514,6 +514,8 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "1",
     "--no-call-home",
     "--geo-bypass",
+    "--no-impersonate", // 🔧 DESABILITAR IMPERSONATION
+    "--ignore-errors", // 🔧 IGNORAR ERROS NÃO CRÍTICOS
     "--add-header",
     "Accept-Language:en-US,en;q=0.9",
     "--add-header",
@@ -575,6 +577,19 @@ function isAuthenticationError(errorMessage) {
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+}
+
+function isNonCriticalError(errorMessage) {
+  const nonCriticalErrors = [
+    "impersonation",
+    "impersonate target",
+    "subtitle",
+    "Unable to download video subtitles",
+    "HTTP Error 429",
+    "Too Many Requests",
+  ]
+
+  return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
 }
 
 const fileMap = new Map()
@@ -780,11 +795,10 @@ app.post("/download", async (req, res) => {
             formatSelector,
             "--merge-output-format",
             "mp4",
-            "--add-metadata",
-            "--embed-subs",
-            "--write-auto-subs",
+            "--write-subs", // 🔧 APENAS ESCREVER (não auto-subs)
             "--sub-langs",
             "pt,en",
+            "--ignore-errors", // 🔧 IGNORAR ERROS DE LEGENDAS
             "-o",
             outputPath,
             url,
@@ -844,7 +858,11 @@ app.post("/download", async (req, res) => {
     } catch (error) {
       console.error("❌ Erro no download:", error.message)
 
-      if (isAuthenticationError(error.message)) {
+      // 🔧 VERIFICAR SE É ERRO NÃO CRÍTICO
+      if (isNonCriticalError(error.message)) {
+        console.log("⚠️ Erro não crítico ignorado:", error.message)
+        // Continuar com o download mesmo com estes erros
+      } else if (isAuthenticationError(error.message)) {
         if (detectedPlatform === "instagram") {
           return res.status(400).json({
             error: "Instagram requer login. Configure cookies via environment variables.",
