@@ -80,6 +80,15 @@ const COOKIES_DIR = path.join(__dirname, "cookies")
 // 🛡️ CONTADOR DE DOWNLOADS ATIVOS - CORRIGIDO
 let activeDownloads = 0
 
+// 🐦 COOKIES ESSENCIAIS PARA TWITTER NSFW
+const TWITTER_ESSENTIAL_COOKIES = [
+  "auth_token", // ⭐⭐⭐ CRÍTICO - Token de autenticação principal
+  "ct0", // ⭐⭐⭐ CRÍTICO - CSRF token
+  "twid", // ⭐⭐ IMPORTANTE - Twitter ID
+  "att", // ⭐⭐ IMPORTANTE - Authentication token
+  "personalization_id", // ⭐ ÚTIL - Configurações de conta
+]
+
 // 🕐 FUNÇÃO SIMPLES PARA VERIFICAR DURAÇÃO
 function checkDuration(duration) {
   if (!duration || duration <= 0) {
@@ -184,6 +193,43 @@ function validateCookieFormat(cookieContent, filename) {
   }
 }
 
+// 🐦 FUNÇÃO PARA VALIDAR COOKIES ESPECÍFICOS DO TWITTER
+function validateTwitterCookies(cookieContent) {
+  const lines = cookieContent.split("\n")
+  const foundCookies = new Set()
+
+  lines.forEach((line) => {
+    if (line.trim() && !line.startsWith("#")) {
+      const fields = line.split("\t")
+      if (fields.length >= 6) {
+        const cookieName = fields[5] // Nome do cookie
+        foundCookies.add(cookieName)
+      }
+    }
+  })
+
+  const criticalMissing = []
+  const importantMissing = []
+
+  // Verificar cookies críticos
+  if (!foundCookies.has("auth_token")) criticalMissing.push("auth_token")
+  if (!foundCookies.has("ct0")) criticalMissing.push("ct0")
+
+  // Verificar cookies importantes
+  if (!foundCookies.has("twid")) importantMissing.push("twid")
+  if (!foundCookies.has("att")) importantMissing.push("att")
+
+  return {
+    valid: criticalMissing.length === 0,
+    criticalMissing,
+    importantMissing,
+    foundCookies: Array.from(foundCookies),
+    nsfwReady: criticalMissing.length === 0,
+    recommendation:
+      criticalMissing.length === 0 ? "✅ Pronto para NSFW" : "❌ Faltam cookies críticos - faça login novamente",
+  }
+}
+
 // 🔍 FUNÇÃO PARA DEBUGAR SISTEMA DE COOKIES
 function debugCookieSystem() {
   console.log("\n🔍 === DIAGNÓSTICO COMPLETO DE COOKIES ===")
@@ -192,6 +238,7 @@ function debugCookieSystem() {
   console.log("📋 VARIÁVEIS DE AMBIENTE:")
   let envVarsFound = 0
 
+  // Google Cookies
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -212,6 +259,7 @@ function debugCookieSystem() {
     }
   }
 
+  // Instagram Cookies
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -225,6 +273,31 @@ function debugCookieSystem() {
         console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
       } else {
         console.log(`   ❌ Formato: ${validation.reason}`)
+      }
+    }
+  }
+
+  // 🐦 Twitter Cookies
+  for (let i = 1; i <= 5; i++) {
+    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
+
+      const validation = validateCookieFormat(cookieContent, envVar)
+      const twitterValidation = validateTwitterCookies(cookieContent)
+
+      if (validation.valid) {
+        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
+      } else {
+        console.log(`   ❌ Formato: ${validation.reason}`)
+      }
+
+      console.log(`   🐦 Twitter: ${twitterValidation.recommendation}`)
+      if (twitterValidation.criticalMissing.length > 0) {
+        console.log(`   ❌ Faltam críticos: ${twitterValidation.criticalMissing.join(", ")}`)
       }
     }
   }
@@ -251,6 +324,12 @@ function debugCookieSystem() {
           console.log(`   📝 Linhas: ${content.split("\n").length}`)
           console.log(`   ${validation.valid ? "✅" : "❌"} Formato: ${validation.valid ? "OK" : validation.reason}`)
 
+          // 🐦 Validação específica para Twitter
+          if (file.startsWith("twitter_")) {
+            const twitterValidation = validateTwitterCookies(content)
+            console.log(`   🐦 NSFW: ${twitterValidation.nsfwReady ? "✅ PRONTO" : "❌ FALTAM COOKIES"}`)
+          }
+
           if (validation.issues.length > 0) {
             console.log(`   ⚠️ Problemas: ${validation.issues.length}`)
           }
@@ -267,9 +346,10 @@ function debugCookieSystem() {
   console.log("\n🍪 POOLS DE COOKIES:")
   console.log(`🔵 Google Pool: ${googleCookiePool.length} arquivos`)
   console.log(`📸 Instagram Pool: ${instagramCookiePool.length} arquivos`)
+  console.log(`🐦 Twitter Pool: ${twitterCookiePool.length} arquivos`)
   console.log(`📊 General Pool: ${generalCookiePool.length} arquivos`)
 
-  if (googleCookiePool.length === 0 && instagramCookiePool.length === 0) {
+  if (googleCookiePool.length === 0 && instagramCookiePool.length === 0 && twitterCookiePool.length === 0) {
     console.log("❌ NENHUM COOKIE CARREGADO!")
     console.log("💡 Verifique se as variáveis de ambiente estão corretas")
   }
@@ -567,6 +647,45 @@ function createSecureCookieFiles() {
     }
   }
 
+  // 🐦 Twitter Cookies - NOVO!
+  for (let i = 1; i <= 5; i++) {
+    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
+
+      const filename = `twitter_conta${i.toString().padStart(2, "0")}.txt`
+      const filepath = path.join(COOKIES_DIR, filename)
+
+      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+        const validation = validateCookieFormat(cookieContent, filename)
+        const twitterValidation = validateTwitterCookies(cookieContent)
+
+        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
+        console.log(`✅ Cookie Twitter ${i} criado: ${filename}`)
+
+        if (validation.valid) {
+          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
+        } else {
+          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
+        }
+
+        // 🐦 Validação específica do Twitter
+        console.log(`   🐦 ${twitterValidation.recommendation}`)
+        if (twitterValidation.nsfwReady) {
+          console.log(`   🔞 NSFW habilitado - cookies críticos presentes`)
+        } else {
+          console.log(`   ❌ NSFW não disponível - faltam: ${twitterValidation.criticalMissing.join(", ")}`)
+        }
+
+        cookiesCreated++
+      } else {
+        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
+      }
+    }
+  }
+
   console.log(`🎯 Total de cookies criados: ${cookiesCreated}`)
 
   // 🔍 EXECUTAR DIAGNÓSTICO COMPLETO APÓS 2 SEGUNDOS
@@ -579,6 +698,7 @@ function createSecureCookieFiles() {
 
 let googleCookiePool = []
 let instagramCookiePool = []
+let twitterCookiePool = [] // 🐦 NOVO POOL TWITTER
 let generalCookiePool = []
 
 function loadCookiePool() {
@@ -592,10 +712,12 @@ function loadCookiePool() {
 
     googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
     instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
+    twitterCookiePool = files.filter((f) => f.startsWith("twitter_")).map((f) => path.join(COOKIES_DIR, f)) // 🐦 NOVO
     generalCookiePool = files.map((file) => path.join(COOKIES_DIR, file))
 
     console.log(`🔵 Google cookies: ${googleCookiePool.length}`)
     console.log(`📸 Instagram cookies: ${instagramCookiePool.length}`)
+    console.log(`🐦 Twitter cookies: ${twitterCookiePool.length}`) // 🐦 NOVO
     console.log(`🍪 Total cookies: ${generalCookiePool.length}`)
   } catch (error) {
     console.error("❌ Erro ao carregar cookies:", error)
@@ -617,17 +739,22 @@ function detectPlatform(url) {
   }
 }
 
-// 🔍 VERSÃO COM DEBUG da função getSmartCookie
+// 🔍 VERSÃO COM DEBUG da função getSmartCookie - ATUALIZADA COM TWITTER
 function getSmartCookie(platform) {
   let pool = []
   let poolName = ""
 
   switch (platform.toLowerCase()) {
     case "youtube":
-    case "twitter":
     case "reddit":
       pool = googleCookiePool
       poolName = "Google"
+      break
+    case "twitter":
+    case "x":
+      // 🐦 PRIORIZAR COOKIES ESPECÍFICOS DO TWITTER
+      pool = twitterCookiePool.length > 0 ? twitterCookiePool : googleCookiePool
+      poolName = twitterCookiePool.length > 0 ? "Twitter" : "Google (fallback)"
       break
     case "instagram":
       pool = instagramCookiePool
@@ -645,6 +772,11 @@ function getSmartCookie(platform) {
 
   const selected = pool[Math.floor(Math.random() * pool.length)]
   console.log(`🍪 Cookie selecionado para ${platform}: ${path.basename(selected)} (pool: ${poolName})`)
+
+  // 🐦 Log especial para Twitter
+  if (platform === "twitter" && poolName === "Twitter") {
+    console.log(`   🔞 Cookie Twitter específico - NSFW habilitado`)
+  }
 
   return selected
 }
@@ -682,7 +814,7 @@ function getFormatSelector(format, quality, platform) {
     return "best[height<=144][ext=mp4]/best[height<=144]/best[ext=mp4]/best"
   }
 
-  // YouTube e outras plataformas - ADICIONADO 144P
+  // YouTube, Twitter e outras plataformas - ADICIONADO 144P
   if (q >= 1080) {
     return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
   } else if (q >= 720) {
@@ -742,6 +874,22 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
       "5",
       "--retry-sleep",
       "3",
+    )
+  }
+
+  // 🐦 CONFIGURAÇÕES ESPECÍFICAS PARA TWITTER
+  if (platform === "twitter") {
+    baseArgs.push(
+      "--sleep-interval",
+      "1",
+      "--max-sleep-interval",
+      "3",
+      "--extractor-retries",
+      "5",
+      "--fragment-retries",
+      "5",
+      "--retry-sleep",
+      "2",
     )
   }
 
@@ -870,7 +1018,7 @@ if (!fs.existsSync(COOKIES_DIR)) {
   fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
-// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS + DEBUG DE COOKIES
+// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS + DEBUG DE COOKIES + TWITTER
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false // 🔧 FLAG PARA CONTROLAR CONTADOR
@@ -900,7 +1048,7 @@ app.post("/download", async (req, res) => {
     console.log(`🚀 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
     const detectedPlatform = detectPlatform(url)
-    const cookieFile = getSmartCookie(detectedPlatform) // 🔍 JÁ COM DEBUG
+    const cookieFile = getSmartCookie(detectedPlatform) // 🔍 JÁ COM DEBUG + TWITTER
     const randomUA = getRandomUserAgent()
     const uniqueId = crypto.randomBytes(8).toString("hex")
 
@@ -997,7 +1145,7 @@ app.post("/download", async (req, res) => {
             url,
           ]
         } else {
-          // 🔧 YOUTUBE E OUTRAS - SEM AUTO-SUBS PARA EVITAR RATE LIMIT
+          // 🔧 YOUTUBE, TWITTER E OUTRAS - SEM AUTO-SUBS PARA EVITAR RATE LIMIT
           downloadArgs = [
             ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
             "-f",
@@ -1081,6 +1229,14 @@ app.post("/download", async (req, res) => {
             type: "instagram_auth_required",
             platform: "instagram",
           })
+        } else if (detectedPlatform === "twitter") {
+          // 🐦 ERRO ESPECÍFICO PARA TWITTER
+          return res.status(400).json({
+            error: "Conteúdo NSFW do Twitter requer cookies de autenticação. Configure TWITTER_COOKIE_01.",
+            type: "twitter_nsfw_required",
+            platform: "twitter",
+            suggestion: "Use Cookie-Editor para extrair cookies do Twitter logado",
+          })
         }
         return res.status(400).json({
           error: "Conteúdo privado ou requer login.",
@@ -1102,7 +1258,7 @@ app.post("/download", async (req, res) => {
   }
 })
 
-// 🔍 ROTA DE TESTE DE COOKIES
+// 🔍 ROTA DE TESTE DE COOKIES - ATUALIZADA COM TWITTER
 app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES INICIADO ===")
 
@@ -1112,6 +1268,7 @@ app.get("/test-cookies", async (req, res) => {
     pools: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
+      twitter: twitterCookiePool.length, // 🐦 NOVO
       general: generalCookiePool.length,
     },
     tests: {},
@@ -1120,6 +1277,8 @@ app.get("/test-cookies", async (req, res) => {
 
   // 1. Verificar variáveis de ambiente
   let envVarsFound = 0
+
+  // Google
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -1135,13 +1294,14 @@ app.get("/test-cookies", async (req, res) => {
         format_valid: validation.valid,
         valid_lines: validation.validLines,
         invalid_lines: validation.invalidLines,
-        issues: validation.issues.slice(0, 3), // Apenas primeiros 3 problemas
+        issues: validation.issues.slice(0, 3),
       }
     } else {
       results.environment_variables[envVar] = { exists: false }
     }
   }
 
+  // Instagram
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -1157,6 +1317,32 @@ app.get("/test-cookies", async (req, res) => {
         format_valid: validation.valid,
         valid_lines: validation.validLines,
         invalid_lines: validation.invalidLines,
+      }
+    } else {
+      results.environment_variables[envVar] = { exists: false }
+    }
+  }
+
+  // 🐦 Twitter - NOVO
+  for (let i = 1; i <= 5; i++) {
+    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      const validation = validateCookieFormat(cookieContent, envVar)
+      const twitterValidation = validateTwitterCookies(cookieContent)
+
+      results.environment_variables[envVar] = {
+        exists: true,
+        length: cookieContent.length,
+        has_equals: cookieContent.includes("="),
+        format_valid: validation.valid,
+        valid_lines: validation.validLines,
+        invalid_lines: validation.invalidLines,
+        twitter_nsfw_ready: twitterValidation.nsfwReady,
+        twitter_critical_missing: twitterValidation.criticalMissing,
+        twitter_cookies_found: twitterValidation.foundCookies,
       }
     } else {
       results.environment_variables[envVar] = { exists: false }
@@ -1182,6 +1368,13 @@ app.get("/test-cookies", async (req, res) => {
           invalid_lines: validation.invalidLines,
           issues: validation.issues.slice(0, 2),
         }
+
+        // 🐦 Validação específica para Twitter
+        if (file.startsWith("twitter_")) {
+          const twitterValidation = validateTwitterCookies(content)
+          results.cookie_files[file].twitter_nsfw_ready = twitterValidation.nsfwReady
+          results.cookie_files[file].twitter_critical_missing = twitterValidation.criticalMissing
+        }
       }
     }
   } catch (error) {
@@ -1189,7 +1382,7 @@ app.get("/test-cookies", async (req, res) => {
   }
 
   // 3. Testar seleção de cookies
-  const platforms = ["youtube", "instagram", "twitter"]
+  const platforms = ["youtube", "instagram", "twitter"] // 🐦 INCLUÍDO TWITTER
 
   for (const platform of platforms) {
     const selectedCookie = getSmartCookie(platform)
@@ -1198,6 +1391,13 @@ app.get("/test-cookies", async (req, res) => {
       cookie_selected: !!selectedCookie,
       cookie_path: selectedCookie ? path.basename(selectedCookie) : null,
       cookie_exists: selectedCookie ? fs.existsSync(selectedCookie) : false,
+    }
+
+    // 🐦 Info específica para Twitter
+    if (platform === "twitter" && selectedCookie) {
+      const isTwitterSpecific = path.basename(selectedCookie).startsWith("twitter_")
+      results.tests[platform].twitter_specific = isTwitterSpecific
+      results.tests[platform].nsfw_capable = isTwitterSpecific
     }
   }
 
@@ -1208,10 +1408,19 @@ app.get("/test-cookies", async (req, res) => {
     results.recommendations.push(`✅ ${envVarsFound} variáveis de ambiente encontradas`)
   }
 
-  if (results.pools.google === 0 && results.pools.instagram === 0) {
+  if (results.pools.google === 0 && results.pools.instagram === 0 && results.pools.twitter === 0) {
     results.recommendations.push("❌ Nenhum cookie carregado - verifique formato e variáveis")
   } else {
-    results.recommendations.push(`✅ ${results.pools.google + results.pools.instagram} cookies carregados`)
+    results.recommendations.push(
+      `✅ ${results.pools.google + results.pools.instagram + results.pools.twitter} cookies carregados`,
+    )
+  }
+
+  // 🐦 Recomendação específica para Twitter
+  if (results.pools.twitter === 0) {
+    results.recommendations.push("⚠️ Nenhum cookie Twitter - conteúdo NSFW não disponível")
+  } else {
+    results.recommendations.push(`🐦 ${results.pools.twitter} cookies Twitter - NSFW habilitado`)
   }
 
   const hasFormatIssues = Object.values(results.environment_variables).some((v) => v.exists && !v.format_valid)
@@ -1224,12 +1433,13 @@ app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES CONCLUÍDO ===")
 
   res.json({
-    message: "🧪 Teste de Cookies Completo",
+    message: "🧪 Teste de Cookies Completo - Agora com Twitter!",
     timestamp: new Date().toISOString(),
     summary: {
       env_vars_found: envVarsFound,
-      cookies_loaded: results.pools.google + results.pools.instagram,
+      cookies_loaded: results.pools.google + results.pools.instagram + results.pools.twitter,
       files_created: Object.keys(results.cookie_files).length,
+      twitter_nsfw_ready: results.pools.twitter > 0,
     },
     results: results,
   })
@@ -1284,7 +1494,7 @@ app.get("/downloads/:fileKey", (req, res) => {
 app.get("/health", (req, res) => {
   const stats = {
     status: "OK - SECURE",
-    version: "5.2.0 - SECURITY HARDENED + COOKIE DEBUG",
+    version: "5.3.0 - SECURITY HARDENED + TWITTER SUPPORT",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
@@ -1304,10 +1514,12 @@ app.get("/health", (req, res) => {
       "✅ 144p quality support",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
+      "✅ Twitter NSFW support",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
+      twitter: twitterCookiePool.length,
       total: generalCookiePool.length,
     },
     active_downloads: activeDownloads,
@@ -1319,8 +1531,8 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + COOKIE DEBUG!",
-    version: "5.2.0",
+    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW!",
+    version: "5.3.0",
     status: "online - security active",
     security_level: "HIGH",
     limits: {
@@ -1333,12 +1545,20 @@ app.get("/", (req, res) => {
       mp3: "64kbps - 320kbps",
       mp4: "144p, 360p, 480p, 720p, 1080p",
     },
+    twitter_features: [
+      "🐦 Dedicated Twitter cookie pool",
+      "🔞 NSFW content support",
+      "🔍 Twitter-specific cookie validation",
+      "⚡ Optimized for Twitter rate limits",
+      "🛡️ Secure Twitter authentication",
+    ],
     debug_features: [
       "🔍 Cookie format validation",
       "🔍 Environment variable checking",
       "🔍 Cookie pool debugging",
       "🔍 Platform-specific cookie selection",
       "🔍 Real-time cookie usage logging",
+      "🐦 Twitter NSFW readiness check",
     ],
     fixes_applied: [
       "✅ Counter never goes negative",
@@ -1347,6 +1567,7 @@ app.get("/", (req, res) => {
       "✅ Subtitle rate limit errors ignored",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
+      "✅ Twitter NSFW support added",
     ],
     features: [
       "✅ Input validation & sanitization",
@@ -1362,11 +1583,14 @@ app.get("/", (req, res) => {
     ],
     platform_support: {
       tiktok: "✅ Working perfectly",
-      twitter: `✅ Working with ${googleCookiePool.length} cookies`,
+      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
       youtube: `✅ Working with ${googleCookiePool.length} cookies`,
     },
-    debug_endpoints: ["GET /test-cookies - Diagnóstico completo de cookies", "GET /health - Status do sistema"],
+    debug_endpoints: [
+      "GET /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
+      "GET /health - Status do sistema",
+    ],
   })
 })
 
@@ -1388,7 +1612,7 @@ app.use("*", (req, res) => {
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + COOKIE DEBUG")
+  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW SUPPORT")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
@@ -1399,6 +1623,7 @@ app.listen(PORT, () => {
   console.log("  ✅ Suporte a 144p adicionado")
   console.log("  ✅ Tratamento de erros não críticos")
   console.log("  ✅ Sistema de debug de cookies")
+  console.log("  🐦 Suporte completo ao Twitter NSFW")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -1411,6 +1636,7 @@ app.listen(PORT, () => {
   console.log("🍪 COOKIES SEGUROS:")
   console.log(`  🔵 Google: ${googleCookiePool.length}`)
   console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
+  console.log(`  🐦 Twitter: ${twitterCookiePool.length}`)
   console.log(`  📊 Total: ${generalCookiePool.length}`)
 
   console.log("🕐 LIMITES DE DURAÇÃO:")
@@ -1420,6 +1646,12 @@ app.listen(PORT, () => {
   console.log("🎯 QUALIDADES SUPORTADAS:")
   console.log("  🎵 MP3: 64kbps - 320kbps")
   console.log("  📹 MP4: 144p, 360p, 480p, 720p, 1080p")
+
+  console.log("🐦 RECURSOS TWITTER:")
+  console.log("  🔞 Suporte a conteúdo NSFW")
+  console.log("  🍪 Pool dedicado de cookies")
+  console.log("  🔍 Validação específica de cookies")
+  console.log("  ⚡ Otimizado para rate limits")
 
   console.log("🔍 ENDPOINTS DE DEBUG:")
   console.log("  🧪 /test-cookies - Diagnóstico completo")
