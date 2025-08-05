@@ -10,9 +10,9 @@ const crypto = require("crypto")
 
 const app = express()
 
-// 🛡️ CONFIGURAÇÕES PREPARADAS PARA O BOOM
+// 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
 const PORT = process.env.PORT || 8080
-const MAX_CONCURRENT_DOWNLOADS = 12 // ⬆️ AUMENTADO DE 8 PARA 12
+const MAX_CONCURRENT_DOWNLOADS = 8
 const MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB
 const MAX_DURATION = 7200 // 🕐 2 HORAS PARA TUDO (MP3/MP4, qualquer qualidade)
 
@@ -80,25 +80,6 @@ const COOKIES_DIR = path.join(__dirname, "cookies")
 // 🛡️ CONTADOR DE DOWNLOADS ATIVOS - CORRIGIDO
 let activeDownloads = 0
 
-// 🔄 SISTEMA DE ROTAÇÃO DE COOKIES
-const cookieUsageCount = new Map()
-const lastUsedCookie = new Map()
-const consecutiveFailures = new Map()
-
-// 🚨 SISTEMA DE ALERTAS COM TIMEOUT - CORRIGIDO PARA 24H
-let lastAlertTime = 0
-const ALERT_COOLDOWN = 24 * 60 * 60 * 1000 // 24 horas em vez de 30 segundos
-
-// 📊 SISTEMA DE ESTATÍSTICAS
-const downloadStats = {
-  total: 0,
-  successful: 0,
-  failed: 0,
-  byPlatform: {},
-  byHour: {},
-  errors: [],
-}
-
 // 🐦 COOKIES ESSENCIAIS PARA TWITTER NSFW
 const TWITTER_ESSENTIAL_COOKIES = [
   "auth_token", // ⭐⭐⭐ CRÍTICO - Token de autenticação principal
@@ -160,87 +141,6 @@ function formatDuration(seconds) {
     const mins = Math.floor((seconds % 3600) / 60)
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
   }
-}
-
-// 📊 FUNÇÃO PARA REGISTRAR ESTATÍSTICAS
-function recordDownloadStat(platform, success, error = null) {
-  downloadStats.total++
-
-  if (success) {
-    downloadStats.successful++
-  } else {
-    downloadStats.failed++
-    if (error) {
-      downloadStats.errors.push({
-        timestamp: new Date().toISOString(),
-        platform,
-        error: error.substring(0, 100),
-      })
-      // Manter apenas últimos 50 erros
-      if (downloadStats.errors.length > 50) {
-        downloadStats.errors = downloadStats.errors.slice(-50)
-      }
-    }
-  }
-
-  // Por plataforma
-  if (!downloadStats.byPlatform[platform]) {
-    downloadStats.byPlatform[platform] = { total: 0, successful: 0, failed: 0 }
-  }
-  downloadStats.byPlatform[platform].total++
-  if (success) {
-    downloadStats.byPlatform[platform].successful++
-  } else {
-    downloadStats.byPlatform[platform].failed++
-  }
-
-  // Por hora
-  const currentHour = new Date().getHours()
-  downloadStats.byHour[currentHour] = (downloadStats.byHour[currentHour] || 0) + 1
-}
-
-// 🚨 SISTEMA DE ALERTAS COM COOLDOWN DE 24H - CORRIGIDO
-function checkAlerts() {
-  const now = Date.now()
-  const alerts = []
-
-  // 🚨 Carga alta
-  const loadPercentage = activeDownloads / MAX_CONCURRENT_DOWNLOADS
-  if (loadPercentage >= 0.8) {
-    alerts.push(`🚨 CARGA ALTA: ${Math.round(loadPercentage * 100)}% da capacidade`)
-  }
-
-  // 🚨 Taxa de erro alta
-  if (downloadStats.total > 10) {
-    const errorRate = downloadStats.failed / downloadStats.total
-    if (errorRate >= 0.3) {
-      alerts.push(`🚨 TAXA DE ERRO ALTA: ${Math.round(errorRate * 100)}%`)
-    }
-  }
-
-  // 🚨 Cookies esgotados - APENAS SE PASSOU 24H DESDE O ÚLTIMO ALERTA
-  if (now - lastAlertTime > ALERT_COOLDOWN) {
-    if (twitterCookiePool.length === 0) {
-      alerts.push("🚨 SEM COOKIES TWITTER - NSFW INDISPONÍVEL")
-    }
-
-    if (googleCookiePool.length === 0) {
-      alerts.push("🚨 SEM COOKIES GOOGLE - YOUTUBE COMPROMETIDO")
-    }
-
-    // Se houve alertas de cookies, atualizar timestamp
-    if (alerts.some((alert) => alert.includes("SEM COOKIES"))) {
-      lastAlertTime = now
-    }
-  }
-
-  if (alerts.length > 0) {
-    console.log("🚨 === ALERTAS CRÍTICOS ===")
-    alerts.forEach((alert) => console.log(alert))
-    console.log("🚨 ========================")
-  }
-
-  return alerts
 }
 
 // 🔍 FUNÇÃO PARA VALIDAR FORMATO DE COOKIES
@@ -338,8 +238,8 @@ function debugCookieSystem() {
   console.log("📋 VARIÁVEIS DE AMBIENTE:")
   let envVarsFound = 0
 
-  // Google Cookies - AUMENTADO PARA 15
-  for (let i = 1; i <= 15; i++) {
+  // Google Cookies
+  for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -377,8 +277,8 @@ function debugCookieSystem() {
     }
   }
 
-  // 🐦 Twitter Cookies - AUMENTADO PARA 10
-  for (let i = 1; i <= 10; i++) {
+  // 🐦 Twitter Cookies
+  for (let i = 1; i <= 5; i++) {
     const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -476,10 +376,10 @@ app.use(
   }),
 )
 
-// 🛡️ RATE LIMITING PREPARADO PARA O BOOM
+// 🛡️ RATE LIMITING MAIS AMIGÁVEL
 const downloadLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 30, // ⬆️ AUMENTADO DE 20 PARA 30
+  max: 20,
   message: {
     error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
     type: "rate_limit_exceeded",
@@ -490,7 +390,7 @@ const downloadLimiter = rateLimit({
 
 const generalLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 100, // ⬆️ AUMENTADO DE 60 PARA 100
+  max: 60,
   message: {
     error: "Muitas requisições. Tente novamente em 1 minuto.",
     type: "rate_limit_exceeded",
@@ -668,17 +568,12 @@ function executeSecureCommand(command, args, options = {}) {
 
 const ytDlpPath = "yt-dlp"
 
-// 🌐 USER AGENTS EXPANDIDOS - ADICIONADOS MAIS 3
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/131.0.0.0",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-  // 🆕 NOVOS USER AGENTS ADICIONADOS
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0",
-  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0",
 ]
 
 // 🔍 VERSÃO MELHORADA COM DEBUG da função createSecureCookieFiles
@@ -691,8 +586,8 @@ function createSecureCookieFiles() {
 
   let cookiesCreated = 0
 
-  // Google Cookies - AUMENTADO PARA 15
-  for (let i = 1; i <= 15; i++) {
+  // Google Cookies
+  for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -752,8 +647,8 @@ function createSecureCookieFiles() {
     }
   }
 
-  // 🐦 Twitter Cookies - AUMENTADO PARA 10!
-  for (let i = 1; i <= 10; i++) {
+  // 🐦 Twitter Cookies - NOVO!
+  for (let i = 1; i <= 5; i++) {
     const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -803,7 +698,7 @@ function createSecureCookieFiles() {
 
 let googleCookiePool = []
 let instagramCookiePool = []
-let twitterCookiePool = [] // 🐦 POOL TWITTER
+let twitterCookiePool = [] // 🐦 NOVO POOL TWITTER
 let generalCookiePool = []
 
 function loadCookiePool() {
@@ -817,12 +712,12 @@ function loadCookiePool() {
 
     googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
     instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
-    twitterCookiePool = files.filter((f) => f.startsWith("twitter_")).map((f) => path.join(COOKIES_DIR, f)) // 🐦
+    twitterCookiePool = files.filter((f) => f.startsWith("twitter_")).map((f) => path.join(COOKIES_DIR, f)) // 🐦 NOVO
     generalCookiePool = files.map((file) => path.join(COOKIES_DIR, file))
 
     console.log(`🔵 Google cookies: ${googleCookiePool.length}`)
     console.log(`📸 Instagram cookies: ${instagramCookiePool.length}`)
-    console.log(`🐦 Twitter cookies: ${twitterCookiePool.length}`) // 🐦
+    console.log(`🐦 Twitter cookies: ${twitterCookiePool.length}`) // 🐦 NOVO
     console.log(`🍪 Total cookies: ${generalCookiePool.length}`)
   } catch (error) {
     console.error("❌ Erro ao carregar cookies:", error)
@@ -844,8 +739,8 @@ function detectPlatform(url) {
   }
 }
 
-// 🔄 FUNÇÃO PARA ROTACIONAR COOKIES INTELIGENTEMENTE
-function getSmartCookieWithRotation(platform) {
+// 🔍 VERSÃO COM DEBUG da função getSmartCookie - ATUALIZADA COM TWITTER
+function getSmartCookie(platform) {
   let pool = []
   let poolName = ""
 
@@ -875,44 +770,8 @@ function getSmartCookieWithRotation(platform) {
     return null
   }
 
-  // 🔄 ROTAÇÃO INTELIGENTE - EVITAR SOBRECARGA
-  const now = Date.now()
-  const availableCookies = pool.filter((cookie) => {
-    const lastUsed = lastUsedCookie.get(cookie) || 0
-    const usageCount = cookieUsageCount.get(cookie) || 0
-    const failures = consecutiveFailures.get(cookie) || 0
-
-    // Evitar cookies com muitas falhas
-    if (failures >= 3) {
-      return false
-    }
-
-    // Evitar cookies muito usados recentemente
-    const timeSinceLastUse = now - lastUsed
-    const cooldownTime = Math.min(60000, usageCount * 5000) // Max 1 min cooldown
-
-    return timeSinceLastUse > cooldownTime
-  })
-
-  let selected
-  if (availableCookies.length > 0) {
-    // Usar cookie menos usado
-    selected = availableCookies.reduce((least, current) => {
-      const leastUsage = cookieUsageCount.get(least) || 0
-      const currentUsage = cookieUsageCount.get(current) || 0
-      return currentUsage < leastUsage ? current : least
-    })
-  } else {
-    // Fallback para qualquer cookie se todos estão em cooldown
-    selected = pool[Math.floor(Math.random() * pool.length)]
-  }
-
-  // Atualizar contadores
-  cookieUsageCount.set(selected, (cookieUsageCount.get(selected) || 0) + 1)
-  lastUsedCookie.set(selected, now)
-
+  const selected = pool[Math.floor(Math.random() * pool.length)]
   console.log(`🍪 Cookie selecionado para ${platform}: ${path.basename(selected)} (pool: ${poolName})`)
-  console.log(`   📊 Uso: ${cookieUsageCount.get(selected)} vezes`)
 
   // 🐦 Log especial para Twitter
   if (platform === "twitter" && poolName === "Twitter") {
@@ -920,11 +779,6 @@ function getSmartCookieWithRotation(platform) {
   }
 
   return selected
-}
-
-// Manter função original para compatibilidade
-function getSmartCookie(platform) {
-  return getSmartCookieWithRotation(platform)
 }
 
 function getRandomFromPool(pool) {
@@ -975,7 +829,7 @@ function getFormatSelector(format, quality, platform) {
   }
 }
 
-// 🔧 COMANDO SEGURO MELHORADO PARA TWITTER NSFW - CORRIGIDO
+// 🔧 COMANDO SEGURO CORRIGIDO - SEM IMPERSONATION E LEGENDAS OPCIONAIS
 function buildSecureCommand(userAgent, cookieFile, platform) {
   const baseArgs = [
     "--user-agent",
@@ -984,11 +838,11 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "--no-check-certificates",
     "--prefer-insecure",
     "--extractor-retries",
-    "5", // ⬆️ AUMENTADO DE 3 PARA 5
+    "3",
     "--fragment-retries",
-    "5", // ⬆️ AUMENTADO DE 3 PARA 5
+    "3",
     "--retry-sleep",
-    "2", // ⬆️ AUMENTADO DE 1 PARA 2
+    "1",
     "--no-call-home",
     "--geo-bypass",
     "--ignore-errors", // 🔧 IGNORAR ERROS NÃO CRÍTICOS
@@ -1023,30 +877,19 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     )
   }
 
-  // 🐦 CONFIGURAÇÕES ESPECÍFICAS PARA TWITTER NSFW - MELHORADAS
+  // 🐦 CONFIGURAÇÕES ESPECÍFICAS PARA TWITTER
   if (platform === "twitter") {
     baseArgs.push(
       "--sleep-interval",
-      "2", // ⬆️ AUMENTADO DE 1 PARA 2
+      "1",
       "--max-sleep-interval",
-      "5", // ⬆️ AUMENTADO DE 3 PARA 5
+      "3",
       "--extractor-retries",
-      "8", // ⬆️ AUMENTADO DE 5 PARA 8
+      "5",
       "--fragment-retries",
-      "8", // ⬆️ AUMENTADO DE 5 PARA 8
+      "5",
       "--retry-sleep",
-      "3", // ⬆️ AUMENTADO DE 2 PARA 3
-      // 🔧 HEADERS ESPECÍFICOS PARA TWITTER
-      "--add-header",
-      "Referer:https://twitter.com/",
-      "--add-header",
-      "Origin:https://twitter.com",
-      "--add-header",
-      "Sec-Fetch-Site:same-origin",
-      "--add-header",
-      "Sec-Fetch-Mode:cors",
-      "--add-header",
-      "Sec-Fetch-Dest:empty",
+      "2",
     )
   }
 
@@ -1077,9 +920,6 @@ function isAuthenticationError(errorMessage) {
     "rate-limit reached",
     "General metadata extraction failed",
     "unable to extract shared data",
-    "Could not authenticate you", // 🔧 ADICIONADO ERRO ESPECÍFICO DO TWITTER
-    "authentication failed", // 🔧 ADICIONADO
-    "unauthorized", // 🔧 ADICIONADO
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -1178,11 +1018,10 @@ if (!fs.existsSync(COOKIES_DIR)) {
   fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
-// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS + DEBUG DE COOKIES + TWITTER + ROTAÇÃO
+// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS + DEBUG DE COOKIES + TWITTER
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false // 🔧 FLAG PARA CONTROLAR CONTADOR
-  let cookieUsed = null
 
   try {
     if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
@@ -1209,16 +1048,16 @@ app.post("/download", async (req, res) => {
     console.log(`🚀 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
     const detectedPlatform = detectPlatform(url)
-    cookieUsed = getSmartCookieWithRotation(detectedPlatform) // 🔄 COM ROTAÇÃO!
+    const cookieFile = getSmartCookie(detectedPlatform) // 🔍 JÁ COM DEBUG + TWITTER
     const randomUA = getRandomUserAgent()
     const uniqueId = crypto.randomBytes(8).toString("hex")
 
     // 🔍 LOG DETALHADO DE COOKIE
     console.log("🍪 Informações de cookie:", {
       platform: detectedPlatform,
-      cookieFile: cookieUsed ? path.basename(cookieUsed) : "NENHUM",
-      cookieExists: cookieUsed ? fs.existsSync(cookieUsed) : false,
-      cookieSize: cookieUsed && fs.existsSync(cookieUsed) ? fs.statSync(cookieUsed).size : 0,
+      cookieFile: cookieFile ? path.basename(cookieFile) : "NENHUM",
+      cookieExists: cookieFile ? fs.existsSync(cookieFile) : false,
+      cookieSize: cookieFile && fs.existsSync(cookieFile) ? fs.statSync(cookieFile).size : 0,
     })
 
     console.log("🎯 Nova requisição segura:", {
@@ -1228,11 +1067,11 @@ app.post("/download", async (req, res) => {
       platform: detectedPlatform,
     })
 
-    const jsonArgs = [...buildSecureCommand(randomUA, cookieUsed, detectedPlatform), "-j", url]
+    const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
 
     try {
       const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
-        timeout: 60000, // ⬆️ AUMENTADO DE 45s PARA 60s PARA TWITTER
+        timeout: 45000,
       })
 
       let data
@@ -1278,7 +1117,7 @@ app.post("/download", async (req, res) => {
         const q = Number.parseInt(quality || "128")
         const formatSelector = getFormatSelector("mp3", quality, detectedPlatform)
         downloadArgs = [
-          ...buildSecureCommand(randomUA, cookieUsed, detectedPlatform),
+          ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
           formatSelector,
           "--extract-audio",
@@ -1297,7 +1136,7 @@ app.post("/download", async (req, res) => {
 
         if (detectedPlatform === "tiktok" || detectedPlatform === "instagram") {
           downloadArgs = [
-            ...buildSecureCommand(randomUA, cookieUsed, detectedPlatform),
+            ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
             "-f",
             formatSelector,
             "--add-metadata",
@@ -1308,7 +1147,7 @@ app.post("/download", async (req, res) => {
         } else {
           // 🔧 YOUTUBE, TWITTER E OUTRAS - SEM AUTO-SUBS PARA EVITAR RATE LIMIT
           downloadArgs = [
-            ...buildSecureCommand(randomUA, cookieUsed, detectedPlatform),
+            ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
             "-f",
             formatSelector,
             "--merge-output-format",
@@ -1324,7 +1163,7 @@ app.post("/download", async (req, res) => {
       console.log("🚀 Iniciando download seguro...")
 
       const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-        timeout: 900000, // ⬆️ AUMENTADO PARA 15 MINUTOS PARA TWITTER NSFW
+        timeout: 600000,
       })
 
       // 🔧 VERIFICAR SE HOUVE ERROS NÃO CRÍTICOS
@@ -1356,21 +1195,13 @@ app.post("/download", async (req, res) => {
         created: Date.now(),
       })
 
-      // 📊 REGISTRAR SUCESSO
-      recordDownloadStat(detectedPlatform, true)
-
-      // 🔄 RESETAR FALHAS DO COOKIE
-      if (cookieUsed) {
-        consecutiveFailures.set(cookieUsed, 0)
-      }
-
       console.log("✅ Download seguro concluído:", {
         platform: detectedPlatform,
         downloadKey: downloadKey,
         size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
         duration: durationCheck.duration_formatted || "N/A",
-        used_cookies: !!cookieUsed,
-        cookie_file: cookieUsed ? path.basename(cookieUsed) : "NENHUM",
+        used_cookies: !!cookieFile,
+        cookie_file: cookieFile ? path.basename(cookieFile) : "NENHUM",
       })
 
       res.json({
@@ -1382,19 +1213,10 @@ app.post("/download", async (req, res) => {
         duration_formatted: durationCheck.duration_formatted,
         platform: detectedPlatform,
         quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-        used_cookies: !!cookieUsed,
+        used_cookies: !!cookieFile,
       })
     } catch (error) {
       console.error("❌ Erro no download:", error.message)
-
-      // 📊 REGISTRAR FALHA
-      recordDownloadStat(detectedPlatform, false, error.message)
-
-      // 🔄 INCREMENTAR FALHAS DO COOKIE
-      if (cookieUsed) {
-        const failures = consecutiveFailures.get(cookieUsed) || 0
-        consecutiveFailures.set(cookieUsed, failures + 1)
-      }
 
       // 🔧 VERIFICAR SE É ERRO NÃO CRÍTICO ANTES DE FALHAR
       if (isNonCriticalError(error.message)) {
@@ -1408,16 +1230,12 @@ app.post("/download", async (req, res) => {
             platform: "instagram",
           })
         } else if (detectedPlatform === "twitter") {
-          // 🐦 ERRO ESPECÍFICO PARA TWITTER MELHORADO
+          // 🐦 ERRO ESPECÍFICO PARA TWITTER
           return res.status(400).json({
-            error: "Conteúdo NSFW do Twitter requer cookies válidos. Verifique se os cookies não expiraram.",
+            error: "Conteúdo NSFW do Twitter requer cookies de autenticação. Configure TWITTER_COOKIE_01.",
             type: "twitter_nsfw_required",
             platform: "twitter",
-            suggestion: "Renove os cookies do Twitter usando Cookie-Editor com uma conta logada",
-            debug_info: {
-              cookie_used: cookieUsed ? path.basename(cookieUsed) : "NENHUM",
-              error_details: error.message.substring(0, 200),
-            },
+            suggestion: "Use Cookie-Editor para extrair cookies do Twitter logado",
           })
         }
         return res.status(400).json({
@@ -1430,7 +1248,6 @@ app.post("/download", async (req, res) => {
     }
   } catch (error) {
     console.error("❌ Erro inesperado:", error)
-    recordDownloadStat("unknown", false, error.message)
     res.status(500).json({ error: "Erro interno do servidor" })
   } finally {
     // 🔧 DECREMENTAR CONTADOR APENAS SE FOI INCREMENTADO
@@ -1441,55 +1258,7 @@ app.post("/download", async (req, res) => {
   }
 })
 
-// 📊 ROTA DE ESTATÍSTICAS EM TEMPO REAL
-app.get("/stats", (req, res) => {
-  const currentHour = new Date().getHours()
-  const alerts = checkAlerts()
-
-  res.json({
-    message: "📊 Estatísticas em Tempo Real - BOOM READY!",
-    timestamp: new Date().toISOString(),
-    server: {
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      active_downloads: activeDownloads,
-      max_concurrent: MAX_CONCURRENT_DOWNLOADS,
-      load_percentage: Math.round((activeDownloads / MAX_CONCURRENT_DOWNLOADS) * 100),
-    },
-    downloads: {
-      total: downloadStats.total,
-      successful: downloadStats.successful,
-      failed: downloadStats.failed,
-      success_rate: downloadStats.total > 0 ? Math.round((downloadStats.successful / downloadStats.total) * 100) : 0,
-      current_hour: downloadStats.byHour[currentHour] || 0,
-    },
-    platforms: downloadStats.byPlatform,
-    cookies: {
-      google: googleCookiePool.length,
-      instagram: instagramCookiePool.length,
-      twitter: twitterCookiePool.length,
-      total: generalCookiePool.length,
-      rotation_stats: {
-        total_usage: Array.from(cookieUsageCount.values()).reduce((a, b) => a + b, 0),
-        cookies_in_cooldown: Array.from(lastUsedCookie.entries()).filter(
-          ([cookie, lastUsed]) => Date.now() - lastUsed < 60000,
-        ).length,
-        failed_cookies: Array.from(consecutiveFailures.entries()).filter(([cookie, failures]) => failures >= 3).length,
-      },
-    },
-    recent_errors: downloadStats.errors.slice(-5),
-    alerts: alerts,
-    boom_readiness: {
-      concurrent_capacity: `${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`,
-      rate_limit_capacity: "30 downloads/10min",
-      cookie_pools_ready: googleCookiePool.length > 0 && twitterCookiePool.length > 0,
-      twitter_nsfw_ready: twitterCookiePool.length > 0,
-      user_agents: userAgents.length,
-    },
-  })
-})
-
-// 🔍 ROTA DE TESTE DE COOKIES - ATUALIZADA COM TWITTER E ROTAÇÃO
+// 🔍 ROTA DE TESTE DE COOKIES - ATUALIZADA COM TWITTER
 app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES INICIADO ===")
 
@@ -1499,13 +1268,8 @@ app.get("/test-cookies", async (req, res) => {
     pools: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
-      twitter: twitterCookiePool.length,
+      twitter: twitterCookiePool.length, // 🐦 NOVO
       general: generalCookiePool.length,
-    },
-    rotation_stats: {
-      total_usage: Array.from(cookieUsageCount.values()).reduce((a, b) => a + b, 0),
-      cookies_tracked: cookieUsageCount.size,
-      failed_cookies: Array.from(consecutiveFailures.entries()).filter(([cookie, failures]) => failures >= 3).length,
     },
     tests: {},
     recommendations: [],
@@ -1514,8 +1278,8 @@ app.get("/test-cookies", async (req, res) => {
   // 1. Verificar variáveis de ambiente
   let envVarsFound = 0
 
-  // Google - AUMENTADO PARA 15
-  for (let i = 1; i <= 15; i++) {
+  // Google
+  for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -1559,8 +1323,8 @@ app.get("/test-cookies", async (req, res) => {
     }
   }
 
-  // 🐦 Twitter - AUMENTADO PARA 10
-  for (let i = 1; i <= 10; i++) {
+  // 🐦 Twitter - NOVO
+  for (let i = 1; i <= 5; i++) {
     const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
@@ -1603,8 +1367,6 @@ app.get("/test-cookies", async (req, res) => {
           valid_lines: validation.validLines,
           invalid_lines: validation.invalidLines,
           issues: validation.issues.slice(0, 2),
-          usage_count: cookieUsageCount.get(filepath) || 0,
-          consecutive_failures: consecutiveFailures.get(filepath) || 0,
         }
 
         // 🐦 Validação específica para Twitter
@@ -1620,10 +1382,10 @@ app.get("/test-cookies", async (req, res) => {
   }
 
   // 3. Testar seleção de cookies
-  const platforms = ["youtube", "instagram", "twitter"]
+  const platforms = ["youtube", "instagram", "twitter"] // 🐦 INCLUÍDO TWITTER
 
   for (const platform of platforms) {
-    const selectedCookie = getSmartCookieWithRotation(platform)
+    const selectedCookie = getSmartCookie(platform)
 
     results.tests[platform] = {
       cookie_selected: !!selectedCookie,
@@ -1661,11 +1423,6 @@ app.get("/test-cookies", async (req, res) => {
     results.recommendations.push(`🐦 ${results.pools.twitter} cookies Twitter - NSFW habilitado`)
   }
 
-  // 🔄 Recomendações de rotação
-  if (results.rotation_stats.failed_cookies > 0) {
-    results.recommendations.push(`⚠️ ${results.rotation_stats.failed_cookies} cookies com falhas - considere renovar`)
-  }
-
   const hasFormatIssues = Object.values(results.environment_variables).some((v) => v.exists && !v.format_valid)
   if (hasFormatIssues) {
     results.recommendations.push("⚠️ Alguns cookies têm formato inválido - use formato Netscape do Cookie Editor")
@@ -1676,14 +1433,13 @@ app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES CONCLUÍDO ===")
 
   res.json({
-    message: "🧪 Teste de Cookies Completo - BOOM READY com Rotação!",
+    message: "🧪 Teste de Cookies Completo - Agora com Twitter!",
     timestamp: new Date().toISOString(),
     summary: {
       env_vars_found: envVarsFound,
       cookies_loaded: results.pools.google + results.pools.instagram + results.pools.twitter,
       files_created: Object.keys(results.cookie_files).length,
       twitter_nsfw_ready: results.pools.twitter > 0,
-      rotation_active: results.rotation_stats.cookies_tracked > 0,
     },
     results: results,
   })
@@ -1736,30 +1492,19 @@ app.get("/downloads/:fileKey", (req, res) => {
 })
 
 app.get("/health", (req, res) => {
-  const alerts = checkAlerts()
-
   const stats = {
-    status: "OK - BOOM READY",
-    version: "6.1.0 - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED",
+    status: "OK - SECURE",
+    version: "5.3.0 - SECURITY HARDENED + TWITTER SUPPORT",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
       max_file_size: "1GB",
       max_concurrent: MAX_CONCURRENT_DOWNLOADS,
     },
-    boom_features: [
-      "🔄 Smart cookie rotation",
-      "📊 Real-time statistics",
-      "🚨 Automatic alerts (24h cooldown)",
-      "⚡ Increased capacity (12 concurrent)",
-      "🌐 8 user agents",
-      "🐦 Twitter NSFW support (FIXED)",
-      "📈 Performance monitoring",
-    ],
     security_features: [
       "✅ Input validation",
       "✅ Command injection protection",
-      "✅ Rate limiting (30/10min)",
+      "✅ Rate limiting",
       "✅ Duration limits (2h max)",
       "✅ Secure file handling",
       "✅ Domain whitelist",
@@ -1769,8 +1514,7 @@ app.get("/health", (req, res) => {
       "✅ 144p quality support",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
-      "✅ Twitter NSFW support (FIXED)",
-      "✅ Alert spam prevention (24h cooldown)",
+      "✅ Twitter NSFW support",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
@@ -1778,13 +1522,8 @@ app.get("/health", (req, res) => {
       twitter: twitterCookiePool.length,
       total: generalCookiePool.length,
     },
-    performance: {
-      active_downloads: activeDownloads,
-      uptime: process.uptime(),
-      memory_usage: Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100 + " MB",
-      load_percentage: Math.round((activeDownloads / MAX_CONCURRENT_DOWNLOADS) * 100),
-    },
-    alerts: alerts,
+    active_downloads: activeDownloads,
+    uptime: process.uptime(),
   }
 
   res.json(stats)
@@ -1792,40 +1531,26 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED!",
-    version: "6.1.0",
-    status: "online - boom ready",
+    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW!",
+    version: "5.3.0",
+    status: "online - security active",
     security_level: "HIGH",
-    boom_readiness: "✅ READY FOR REDDIT TRAFFIC",
     limits: {
       duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
       file_size: "1GB máximo",
-      rate_limit: "30 downloads a cada 10 minutos",
-      concurrent: "12 downloads simultâneos",
+      rate_limit: "20 downloads a cada 10 minutos",
+      concurrent: "8 downloads simultâneos",
     },
     quality_support: {
       mp3: "64kbps - 320kbps",
       mp4: "144p, 360p, 480p, 720p, 1080p",
     },
-    boom_features: [
-      "🔄 Smart cookie rotation with cooldowns",
-      "📊 Real-time statistics and monitoring",
-      "🚨 Automatic alert system (24h cooldown - NO MORE SPAM!)",
-      "⚡ Increased capacity (50% more concurrent)",
-      "🌐 8 diverse user agents",
-      "🐦 Dedicated Twitter NSFW support (FIXED)",
-      "📈 Performance tracking",
-      "🛡️ Enhanced security",
-    ],
     twitter_features: [
-      "🐦 Dedicated Twitter cookie pool (up to 10)",
-      "🔞 NSFW content support (FIXED)",
+      "🐦 Dedicated Twitter cookie pool",
+      "🔞 NSFW content support",
       "🔍 Twitter-specific cookie validation",
       "⚡ Optimized for Twitter rate limits",
       "🛡️ Secure Twitter authentication",
-      "🔄 Smart rotation for Twitter cookies",
-      "🔧 Enhanced error handling for Twitter auth",
-      "⏰ Increased timeouts for Twitter NSFW",
     ],
     debug_features: [
       "🔍 Cookie format validation",
@@ -1834,8 +1559,6 @@ app.get("/", (req, res) => {
       "🔍 Platform-specific cookie selection",
       "🔍 Real-time cookie usage logging",
       "🐦 Twitter NSFW readiness check",
-      "🔄 Cookie rotation statistics",
-      "📊 Performance monitoring",
     ],
     fixes_applied: [
       "✅ Counter never goes negative",
@@ -1844,36 +1567,29 @@ app.get("/", (req, res) => {
       "✅ Subtitle rate limit errors ignored",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
-      "✅ Twitter NSFW support FIXED",
-      "✅ Smart cookie rotation implemented",
-      "✅ Performance monitoring added",
-      "✅ Alert spam prevention (24h cooldown)",
-      "✅ Enhanced Twitter authentication",
-      "✅ Increased timeouts for Twitter",
+      "✅ Twitter NSFW support added",
     ],
     features: [
       "✅ Input validation & sanitization",
       "✅ Command injection protection",
-      "✅ Rate limiting (30 downloads/10min)",
+      "✅ Rate limiting (20 downloads/10min)",
       "✅ Duration limits (2h max for everything)",
-      "✅ Concurrent download limits (12 max)",
+      "✅ Concurrent download limits",
       "✅ Domain whitelist protection",
       "✅ Secure file handling",
       "✅ Resource usage limits",
       "✅ Security headers (Helmet)",
-      "✅ Safe cookie management with rotation",
-      "✅ Alert spam prevention",
+      "✅ Safe cookie management",
     ],
     platform_support: {
       tiktok: "✅ Working perfectly",
-      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback + NSFW support (FIXED)`,
+      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
       youtube: `✅ Working with ${googleCookiePool.length} cookies`,
     },
     debug_endpoints: [
-      "GET /test-cookies - Diagnóstico completo de cookies (incluindo rotação)",
+      "GET /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
       "GET /health - Status do sistema",
-      "GET /stats - Estatísticas em tempo real",
     ],
   })
 })
@@ -1889,42 +1605,25 @@ app.use((error, req, res, next) => {
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Rota não encontrada",
-    available_endpoints: ["/", "/health", "/download", "/test-cookies", "/stats"],
+    available_endpoints: ["/", "/health", "/download", "/test-cookies"],
   })
 })
-
-// 🔄 RESETAR CONTADORES DE ROTAÇÃO A CADA HORA
-setInterval(
-  () => {
-    console.log("🔄 Resetando contadores de uso de cookies...")
-    cookieUsageCount.clear()
-    lastUsedCookie.clear()
-    // Manter falhas por mais tempo para evitar cookies problemáticos
-  },
-  60 * 60 * 1000,
-) // 1 hora
-
-// 🚨 VERIFICAR ALERTAS A CADA 5 MINUTOS (EM VEZ DE 30 SEGUNDOS) - MAS COM COOLDOWN DE 24H
-setInterval(checkAlerts, 5 * 60 * 1000) // 5 minutos
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED")
+  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW SUPPORT")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
   console.log("  ✅ Proteção contra command injection")
-  console.log("  ✅ Rate limiting inteligente (30/10min)")
+  console.log("  ✅ Rate limiting inteligente")
   console.log("  ✅ Limite de duração: 2 horas para tudo")
   console.log("  ✅ Contador de downloads corrigido")
   console.log("  ✅ Suporte a 144p adicionado")
   console.log("  ✅ Tratamento de erros não críticos")
   console.log("  ✅ Sistema de debug de cookies")
-  console.log("  🐦 Suporte completo ao Twitter NSFW (CORRIGIDO)")
-  console.log("  🔄 Rotação inteligente de cookies")
-  console.log("  📊 Monitoramento em tempo real")
-  console.log("  🚨 Sistema de alertas com cooldown de 24h (SEM SPAM)")
+  console.log("  🐦 Suporte completo ao Twitter NSFW")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -1935,9 +1634,9 @@ app.listen(PORT, () => {
   loadCookiePool()
 
   console.log("🍪 COOKIES SEGUROS:")
-  console.log(`  🔵 Google: ${googleCookiePool.length} (até 15 suportados)`)
-  console.log(`  📸 Instagram: ${instagramCookiePool.length} (até 8 suportados)`)
-  console.log(`  🐦 Twitter: ${twitterCookiePool.length} (até 10 suportados)`)
+  console.log(`  🔵 Google: ${googleCookiePool.length}`)
+  console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
+  console.log(`  🐦 Twitter: ${twitterCookiePool.length}`)
   console.log(`  📊 Total: ${generalCookiePool.length}`)
 
   console.log("🕐 LIMITES DE DURAÇÃO:")
@@ -1948,36 +1647,15 @@ app.listen(PORT, () => {
   console.log("  🎵 MP3: 64kbps - 320kbps")
   console.log("  📹 MP4: 144p, 360p, 480p, 720p, 1080p")
 
-  console.log("🚀 PREPARAÇÃO PARA O BOOM:")
-  console.log(`  ⚡ Downloads simultâneos: ${MAX_CONCURRENT_DOWNLOADS} (era 8)`)
-  console.log("  📈 Rate limit: 30/10min (era 20/10min)")
-  console.log(`  🌐 User agents: ${userAgents.length} (era 5)`)
-  console.log("  🔄 Rotação inteligente de cookies")
-  console.log("  📊 Monitoramento em tempo real")
-  console.log("  🚨 Sistema de alertas (24h cooldown - SEM SPAM)")
-
-  console.log("🐦 RECURSOS TWITTER (CORRIGIDOS):")
-  console.log("  🔞 Suporte a conteúdo NSFW (CORRIGIDO)")
+  console.log("🐦 RECURSOS TWITTER:")
+  console.log("  🔞 Suporte a conteúdo NSFW")
   console.log("  🍪 Pool dedicado de cookies")
   console.log("  🔍 Validação específica de cookies")
   console.log("  ⚡ Otimizado para rate limits")
-  console.log("  🔄 Rotação inteligente")
-  console.log("  🔧 Headers específicos para Twitter")
-  console.log("  ⏰ Timeouts aumentados (60s JSON, 15min download)")
-  console.log("  🛡️ Melhor tratamento de erros de autenticação")
 
   console.log("🔍 ENDPOINTS DE DEBUG:")
   console.log("  🧪 /test-cookies - Diagnóstico completo")
   console.log("  ❤️ /health - Status do sistema")
-  console.log("  📊 /stats - Estatísticas em tempo real")
-
-  console.log("🔧 CORREÇÕES APLICADAS:")
-  console.log("  ✅ Twitter NSFW: Headers específicos adicionados")
-  console.log("  ✅ Twitter NSFW: Timeouts aumentados")
-  console.log("  ✅ Twitter NSFW: Retry logic melhorado")
-  console.log("  ✅ Alertas: Cooldown de 24h implementado")
-  console.log("  ✅ Alertas: Verificação a cada 5min (era 30s)")
-  console.log("  ✅ Logs: Redução significativa de spam")
 
   cleanupOldFiles()
 })
