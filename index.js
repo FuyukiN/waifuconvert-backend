@@ -85,6 +85,10 @@ const cookieUsageCount = new Map()
 const lastUsedCookie = new Map()
 const consecutiveFailures = new Map()
 
+// 🚨 SISTEMA DE ALERTAS COM TIMEOUT - CORRIGIDO PARA 24H
+let lastAlertTime = 0
+const ALERT_COOLDOWN = 24 * 60 * 60 * 1000 // 24 horas em vez de 30 segundos
+
 // 📊 SISTEMA DE ESTATÍSTICAS
 const downloadStats = {
   total: 0,
@@ -195,8 +199,9 @@ function recordDownloadStat(platform, success, error = null) {
   downloadStats.byHour[currentHour] = (downloadStats.byHour[currentHour] || 0) + 1
 }
 
-// 🚨 SISTEMA DE ALERTAS
+// 🚨 SISTEMA DE ALERTAS COM COOLDOWN DE 24H - CORRIGIDO
 function checkAlerts() {
+  const now = Date.now()
   const alerts = []
 
   // 🚨 Carga alta
@@ -213,13 +218,20 @@ function checkAlerts() {
     }
   }
 
-  // 🚨 Cookies esgotados
-  if (twitterCookiePool.length === 0) {
-    alerts.push("🚨 SEM COOKIES TWITTER - NSFW INDISPONÍVEL")
-  }
+  // 🚨 Cookies esgotados - APENAS SE PASSOU 24H DESDE O ÚLTIMO ALERTA
+  if (now - lastAlertTime > ALERT_COOLDOWN) {
+    if (twitterCookiePool.length === 0) {
+      alerts.push("🚨 SEM COOKIES TWITTER - NSFW INDISPONÍVEL")
+    }
 
-  if (googleCookiePool.length === 0) {
-    alerts.push("🚨 SEM COOKIES GOOGLE - YOUTUBE COMPROMETIDO")
+    if (googleCookiePool.length === 0) {
+      alerts.push("🚨 SEM COOKIES GOOGLE - YOUTUBE COMPROMETIDO")
+    }
+
+    // Se houve alertas de cookies, atualizar timestamp
+    if (alerts.some((alert) => alert.includes("SEM COOKIES"))) {
+      lastAlertTime = now
+    }
   }
 
   if (alerts.length > 0) {
@@ -963,7 +975,7 @@ function getFormatSelector(format, quality, platform) {
   }
 }
 
-// 🔧 COMANDO SEGURO CORRIGIDO - SEM IMPERSONATION E LEGENDAS OPCIONAIS
+// 🔧 COMANDO SEGURO MELHORADO PARA TWITTER NSFW - CORRIGIDO
 function buildSecureCommand(userAgent, cookieFile, platform) {
   const baseArgs = [
     "--user-agent",
@@ -972,11 +984,11 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "--no-check-certificates",
     "--prefer-insecure",
     "--extractor-retries",
-    "3",
+    "5", // ⬆️ AUMENTADO DE 3 PARA 5
     "--fragment-retries",
-    "3",
+    "5", // ⬆️ AUMENTADO DE 3 PARA 5
     "--retry-sleep",
-    "1",
+    "2", // ⬆️ AUMENTADO DE 1 PARA 2
     "--no-call-home",
     "--geo-bypass",
     "--ignore-errors", // 🔧 IGNORAR ERROS NÃO CRÍTICOS
@@ -1011,19 +1023,30 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     )
   }
 
-  // 🐦 CONFIGURAÇÕES ESPECÍFICAS PARA TWITTER
+  // 🐦 CONFIGURAÇÕES ESPECÍFICAS PARA TWITTER NSFW - MELHORADAS
   if (platform === "twitter") {
     baseArgs.push(
       "--sleep-interval",
-      "1",
+      "2", // ⬆️ AUMENTADO DE 1 PARA 2
       "--max-sleep-interval",
-      "3",
+      "5", // ⬆️ AUMENTADO DE 3 PARA 5
       "--extractor-retries",
-      "5",
+      "8", // ⬆️ AUMENTADO DE 5 PARA 8
       "--fragment-retries",
-      "5",
+      "8", // ⬆️ AUMENTADO DE 5 PARA 8
       "--retry-sleep",
-      "2",
+      "3", // ⬆️ AUMENTADO DE 2 PARA 3
+      // 🔧 HEADERS ESPECÍFICOS PARA TWITTER
+      "--add-header",
+      "Referer:https://twitter.com/",
+      "--add-header",
+      "Origin:https://twitter.com",
+      "--add-header",
+      "Sec-Fetch-Site:same-origin",
+      "--add-header",
+      "Sec-Fetch-Mode:cors",
+      "--add-header",
+      "Sec-Fetch-Dest:empty",
     )
   }
 
@@ -1054,6 +1077,9 @@ function isAuthenticationError(errorMessage) {
     "rate-limit reached",
     "General metadata extraction failed",
     "unable to extract shared data",
+    "Could not authenticate you", // 🔧 ADICIONADO ERRO ESPECÍFICO DO TWITTER
+    "authentication failed", // 🔧 ADICIONADO
+    "unauthorized", // 🔧 ADICIONADO
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -1206,7 +1232,7 @@ app.post("/download", async (req, res) => {
 
     try {
       const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
-        timeout: 45000,
+        timeout: 60000, // ⬆️ AUMENTADO DE 45s PARA 60s PARA TWITTER
       })
 
       let data
@@ -1298,7 +1324,7 @@ app.post("/download", async (req, res) => {
       console.log("🚀 Iniciando download seguro...")
 
       const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-        timeout: 600000,
+        timeout: 900000, // ⬆️ AUMENTADO PARA 15 MINUTOS PARA TWITTER NSFW
       })
 
       // 🔧 VERIFICAR SE HOUVE ERROS NÃO CRÍTICOS
@@ -1382,12 +1408,16 @@ app.post("/download", async (req, res) => {
             platform: "instagram",
           })
         } else if (detectedPlatform === "twitter") {
-          // 🐦 ERRO ESPECÍFICO PARA TWITTER
+          // 🐦 ERRO ESPECÍFICO PARA TWITTER MELHORADO
           return res.status(400).json({
-            error: "Conteúdo NSFW do Twitter requer cookies de autenticação. Configure TWITTER_COOKIE_01.",
+            error: "Conteúdo NSFW do Twitter requer cookies válidos. Verifique se os cookies não expiraram.",
             type: "twitter_nsfw_required",
             platform: "twitter",
-            suggestion: "Use Cookie-Editor para extrair cookies do Twitter logado",
+            suggestion: "Renove os cookies do Twitter usando Cookie-Editor com uma conta logada",
+            debug_info: {
+              cookie_used: cookieUsed ? path.basename(cookieUsed) : "NENHUM",
+              error_details: error.message.substring(0, 200),
+            },
           })
         }
         return res.status(400).json({
@@ -1710,7 +1740,7 @@ app.get("/health", (req, res) => {
 
   const stats = {
     status: "OK - BOOM READY",
-    version: "6.0.0 - BOOM EDITION + COOKIE ROTATION",
+    version: "6.1.0 - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
@@ -1720,10 +1750,10 @@ app.get("/health", (req, res) => {
     boom_features: [
       "🔄 Smart cookie rotation",
       "📊 Real-time statistics",
-      "🚨 Automatic alerts",
+      "🚨 Automatic alerts (24h cooldown)",
       "⚡ Increased capacity (12 concurrent)",
       "🌐 8 user agents",
-      "🐦 Twitter NSFW support",
+      "🐦 Twitter NSFW support (FIXED)",
       "📈 Performance monitoring",
     ],
     security_features: [
@@ -1739,7 +1769,8 @@ app.get("/health", (req, res) => {
       "✅ 144p quality support",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
-      "✅ Twitter NSFW support",
+      "✅ Twitter NSFW support (FIXED)",
+      "✅ Alert spam prevention (24h cooldown)",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
@@ -1761,8 +1792,8 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION!",
-    version: "6.0.0",
+    message: "🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED!",
+    version: "6.1.0",
     status: "online - boom ready",
     security_level: "HIGH",
     boom_readiness: "✅ READY FOR REDDIT TRAFFIC",
@@ -1779,20 +1810,22 @@ app.get("/", (req, res) => {
     boom_features: [
       "🔄 Smart cookie rotation with cooldowns",
       "📊 Real-time statistics and monitoring",
-      "🚨 Automatic alert system",
+      "🚨 Automatic alert system (24h cooldown - NO MORE SPAM!)",
       "⚡ Increased capacity (50% more concurrent)",
       "🌐 8 diverse user agents",
-      "🐦 Dedicated Twitter NSFW support",
+      "🐦 Dedicated Twitter NSFW support (FIXED)",
       "📈 Performance tracking",
       "🛡️ Enhanced security",
     ],
     twitter_features: [
       "🐦 Dedicated Twitter cookie pool (up to 10)",
-      "🔞 NSFW content support",
+      "🔞 NSFW content support (FIXED)",
       "🔍 Twitter-specific cookie validation",
       "⚡ Optimized for Twitter rate limits",
       "🛡️ Secure Twitter authentication",
       "🔄 Smart rotation for Twitter cookies",
+      "🔧 Enhanced error handling for Twitter auth",
+      "⏰ Increased timeouts for Twitter NSFW",
     ],
     debug_features: [
       "🔍 Cookie format validation",
@@ -1811,9 +1844,12 @@ app.get("/", (req, res) => {
       "✅ Subtitle rate limit errors ignored",
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
-      "✅ Twitter NSFW support added",
+      "✅ Twitter NSFW support FIXED",
       "✅ Smart cookie rotation implemented",
       "✅ Performance monitoring added",
+      "✅ Alert spam prevention (24h cooldown)",
+      "✅ Enhanced Twitter authentication",
+      "✅ Increased timeouts for Twitter",
     ],
     features: [
       "✅ Input validation & sanitization",
@@ -1826,10 +1862,11 @@ app.get("/", (req, res) => {
       "✅ Resource usage limits",
       "✅ Security headers (Helmet)",
       "✅ Safe cookie management with rotation",
+      "✅ Alert spam prevention",
     ],
     platform_support: {
       tiktok: "✅ Working perfectly",
-      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback + NSFW support`,
+      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback + NSFW support (FIXED)`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
       youtube: `✅ Working with ${googleCookiePool.length} cookies`,
     },
@@ -1867,13 +1904,13 @@ setInterval(
   60 * 60 * 1000,
 ) // 1 hora
 
-// 🚨 VERIFICAR ALERTAS A CADA 30 SEGUNDOS
-setInterval(checkAlerts, 30000)
+// 🚨 VERIFICAR ALERTAS A CADA 5 MINUTOS (EM VEZ DE 30 SEGUNDOS) - MAS COM COOLDOWN DE 24H
+setInterval(checkAlerts, 5 * 60 * 1000) // 5 minutos
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, () => {
-  console.log("🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION")
+  console.log("🚀 WaifuConvert Backend - BOOM EDITION + COOKIE ROTATION + TWITTER NSFW FIXED")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
@@ -1884,10 +1921,10 @@ app.listen(PORT, () => {
   console.log("  ✅ Suporte a 144p adicionado")
   console.log("  ✅ Tratamento de erros não críticos")
   console.log("  ✅ Sistema de debug de cookies")
-  console.log("  🐦 Suporte completo ao Twitter NSFW")
+  console.log("  🐦 Suporte completo ao Twitter NSFW (CORRIGIDO)")
   console.log("  🔄 Rotação inteligente de cookies")
   console.log("  📊 Monitoramento em tempo real")
-  console.log("  🚨 Sistema de alertas automático")
+  console.log("  🚨 Sistema de alertas com cooldown de 24h (SEM SPAM)")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -1917,19 +1954,30 @@ app.listen(PORT, () => {
   console.log(`  🌐 User agents: ${userAgents.length} (era 5)`)
   console.log("  🔄 Rotação inteligente de cookies")
   console.log("  📊 Monitoramento em tempo real")
-  console.log("  🚨 Sistema de alertas")
+  console.log("  🚨 Sistema de alertas (24h cooldown - SEM SPAM)")
 
-  console.log("🐦 RECURSOS TWITTER:")
-  console.log("  🔞 Suporte a conteúdo NSFW")
+  console.log("🐦 RECURSOS TWITTER (CORRIGIDOS):")
+  console.log("  🔞 Suporte a conteúdo NSFW (CORRIGIDO)")
   console.log("  🍪 Pool dedicado de cookies")
   console.log("  🔍 Validação específica de cookies")
   console.log("  ⚡ Otimizado para rate limits")
   console.log("  🔄 Rotação inteligente")
+  console.log("  🔧 Headers específicos para Twitter")
+  console.log("  ⏰ Timeouts aumentados (60s JSON, 15min download)")
+  console.log("  🛡️ Melhor tratamento de erros de autenticação")
 
   console.log("🔍 ENDPOINTS DE DEBUG:")
   console.log("  🧪 /test-cookies - Diagnóstico completo")
   console.log("  ❤️ /health - Status do sistema")
   console.log("  📊 /stats - Estatísticas em tempo real")
+
+  console.log("🔧 CORREÇÕES APLICADAS:")
+  console.log("  ✅ Twitter NSFW: Headers específicos adicionados")
+  console.log("  ✅ Twitter NSFW: Timeouts aumentados")
+  console.log("  ✅ Twitter NSFW: Retry logic melhorado")
+  console.log("  ✅ Alertas: Cooldown de 24h implementado")
+  console.log("  ✅ Alertas: Verificação a cada 5min (era 30s)")
+  console.log("  ✅ Logs: Redução significativa de spam")
 
   cleanupOldFiles()
 })
