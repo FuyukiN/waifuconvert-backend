@@ -134,6 +134,149 @@ function formatDuration(seconds) {
   }
 }
 
+// 🔍 FUNÇÃO PARA VALIDAR FORMATO DE COOKIES
+function validateCookieFormat(cookieContent, filename) {
+  if (!cookieContent || cookieContent.length < 10) {
+    return { valid: false, reason: "Cookie muito pequeno ou vazio" }
+  }
+
+  const lines = cookieContent.split("\n")
+  let validLines = 0
+  let invalidLines = 0
+  const issues = []
+
+  lines.forEach((line, index) => {
+    line = line.trim()
+
+    // Pular comentários e linhas vazias
+    if (!line || line.startsWith("#")) {
+      return
+    }
+
+    // Formato Netscape: domain \t flag \t path \t secure \t expiration \t name \t value
+    const fields = line.split("\t")
+
+    if (fields.length >= 6) {
+      validLines++
+
+      // Verificar se o domínio faz sentido
+      if (!fields[0].includes(".")) {
+        issues.push(`Linha ${index + 1}: Domínio suspeito: ${fields[0]}`)
+      }
+
+      // Verificar expiração
+      const expiration = Number.parseInt(fields[4])
+      if (expiration && expiration < Date.now() / 1000) {
+        issues.push(`Linha ${index + 1}: Cookie expirado: ${fields[5]}`)
+      }
+    } else {
+      invalidLines++
+      issues.push(`Linha ${index + 1}: Formato inválido (${fields.length} campos, precisa >= 6)`)
+    }
+  })
+
+  return {
+    valid: validLines > 0,
+    validLines,
+    invalidLines,
+    issues,
+    reason: validLines === 0 ? "Nenhuma linha válida encontrada" : null,
+  }
+}
+
+// 🔍 FUNÇÃO PARA DEBUGAR SISTEMA DE COOKIES
+function debugCookieSystem() {
+  console.log("\n🔍 === DIAGNÓSTICO COMPLETO DE COOKIES ===")
+
+  // Verificar variáveis de ambiente
+  console.log("📋 VARIÁVEIS DE AMBIENTE:")
+  let envVarsFound = 0
+
+  for (let i = 1; i <= 10; i++) {
+    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
+
+      const validation = validateCookieFormat(cookieContent, envVar)
+      if (validation.valid) {
+        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
+      } else {
+        console.log(`   ❌ Formato: ${validation.reason}`)
+        validation.issues.slice(0, 3).forEach((issue) => console.log(`   ⚠️ ${issue}`))
+      }
+
+      console.log(`   📄 Preview: ${cookieContent.substring(0, 80)}...`)
+    }
+  }
+
+  for (let i = 1; i <= 8; i++) {
+    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
+
+      const validation = validateCookieFormat(cookieContent, envVar)
+      if (validation.valid) {
+        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
+      } else {
+        console.log(`   ❌ Formato: ${validation.reason}`)
+      }
+    }
+  }
+
+  console.log(`📊 Total de variáveis encontradas: ${envVarsFound}`)
+
+  // Verificar arquivos criados
+  console.log("\n📁 ARQUIVOS DE COOKIE:")
+  try {
+    if (fs.existsSync(COOKIES_DIR)) {
+      const files = fs.readdirSync(COOKIES_DIR).filter((f) => f.endsWith(".txt"))
+
+      if (files.length === 0) {
+        console.log("❌ Nenhum arquivo de cookie encontrado")
+      } else {
+        files.forEach((file) => {
+          const filepath = path.join(COOKIES_DIR, file)
+          const stats = fs.statSync(filepath)
+          const content = fs.readFileSync(filepath, "utf8")
+          const validation = validateCookieFormat(content, file)
+
+          console.log(`📄 ${file}:`)
+          console.log(`   📏 Tamanho: ${stats.size} bytes`)
+          console.log(`   📝 Linhas: ${content.split("\n").length}`)
+          console.log(`   ${validation.valid ? "✅" : "❌"} Formato: ${validation.valid ? "OK" : validation.reason}`)
+
+          if (validation.issues.length > 0) {
+            console.log(`   ⚠️ Problemas: ${validation.issues.length}`)
+          }
+        })
+      }
+    } else {
+      console.log("❌ Diretório de cookies não existe")
+    }
+  } catch (error) {
+    console.error("❌ Erro ao ler cookies:", error.message)
+  }
+
+  // Verificar pools
+  console.log("\n🍪 POOLS DE COOKIES:")
+  console.log(`🔵 Google Pool: ${googleCookiePool.length} arquivos`)
+  console.log(`📸 Instagram Pool: ${instagramCookiePool.length} arquivos`)
+  console.log(`📊 General Pool: ${generalCookiePool.length} arquivos`)
+
+  if (googleCookiePool.length === 0 && instagramCookiePool.length === 0) {
+    console.log("❌ NENHUM COOKIE CARREGADO!")
+    console.log("💡 Verifique se as variáveis de ambiente estão corretas")
+  }
+
+  console.log("🔍 === FIM DO DIAGNÓSTICO ===\n")
+}
+
 // 🛡️ MIDDLEWARE DE SEGURANÇA
 app.use(
   helmet({
@@ -353,6 +496,7 @@ const userAgents = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 ]
 
+// 🔍 VERSÃO MELHORADA COM DEBUG da função createSecureCookieFiles
 function createSecureCookieFiles() {
   console.log("🛡️ Criando arquivos de cookie seguros...")
 
@@ -362,39 +506,74 @@ function createSecureCookieFiles() {
 
   let cookiesCreated = 0
 
+  // Google Cookies
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
     if (cookieContent) {
+      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
+
       const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
       if (cookieContent.length > 10 && cookieContent.includes("=")) {
+        // 🔍 VALIDAR FORMATO ANTES DE SALVAR
+        const validation = validateCookieFormat(cookieContent, filename)
+
         fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
         console.log(`✅ Cookie Google ${i} criado: ${filename}`)
+
+        if (validation.valid) {
+          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
+        } else {
+          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
+        }
+
         cookiesCreated++
+      } else {
+        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
       }
     }
   }
 
+  // Instagram Cookies
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
 
     if (cookieContent) {
+      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
+
       const filename = `instagram_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
       if (cookieContent.length > 10 && cookieContent.includes("=")) {
+        const validation = validateCookieFormat(cookieContent, filename)
+
         fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
         console.log(`✅ Cookie Instagram ${i} criado: ${filename}`)
+
+        if (validation.valid) {
+          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
+        } else {
+          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
+        }
+
         cookiesCreated++
+      } else {
+        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
       }
     }
   }
 
   console.log(`🎯 Total de cookies criados: ${cookiesCreated}`)
+
+  // 🔍 EXECUTAR DIAGNÓSTICO COMPLETO APÓS 2 SEGUNDOS
+  setTimeout(() => {
+    debugCookieSystem()
+  }, 2000)
+
   return cookiesCreated
 }
 
@@ -438,17 +617,36 @@ function detectPlatform(url) {
   }
 }
 
+// 🔍 VERSÃO COM DEBUG da função getSmartCookie
 function getSmartCookie(platform) {
+  let pool = []
+  let poolName = ""
+
   switch (platform.toLowerCase()) {
     case "youtube":
     case "twitter":
     case "reddit":
-      return getRandomFromPool(googleCookiePool)
+      pool = googleCookiePool
+      poolName = "Google"
+      break
     case "instagram":
-      return getRandomFromPool(instagramCookiePool)
+      pool = instagramCookiePool
+      poolName = "Instagram"
+      break
     default:
-      return getRandomFromPool(generalCookiePool)
+      pool = generalCookiePool
+      poolName = "General"
   }
+
+  if (pool.length === 0) {
+    console.log(`🍪 Nenhum cookie ${poolName} disponível para ${platform}`)
+    return null
+  }
+
+  const selected = pool[Math.floor(Math.random() * pool.length)]
+  console.log(`🍪 Cookie selecionado para ${platform}: ${path.basename(selected)} (pool: ${poolName})`)
+
+  return selected
 }
 
 function getRandomFromPool(pool) {
@@ -672,7 +870,7 @@ if (!fs.existsSync(COOKIES_DIR)) {
   fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
-// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS
+// 🛡️ ROTA PRINCIPAL CORRIGIDA - CONTADOR E ERROS FIXADOS + DEBUG DE COOKIES
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false // 🔧 FLAG PARA CONTROLAR CONTADOR
@@ -702,9 +900,17 @@ app.post("/download", async (req, res) => {
     console.log(`🚀 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
     const detectedPlatform = detectPlatform(url)
-    const cookieFile = getSmartCookie(detectedPlatform)
+    const cookieFile = getSmartCookie(detectedPlatform) // 🔍 JÁ COM DEBUG
     const randomUA = getRandomUserAgent()
     const uniqueId = crypto.randomBytes(8).toString("hex")
+
+    // 🔍 LOG DETALHADO DE COOKIE
+    console.log("🍪 Informações de cookie:", {
+      platform: detectedPlatform,
+      cookieFile: cookieFile ? path.basename(cookieFile) : "NENHUM",
+      cookieExists: cookieFile ? fs.existsSync(cookieFile) : false,
+      cookieSize: cookieFile && fs.existsSync(cookieFile) ? fs.statSync(cookieFile).size : 0,
+    })
 
     console.log("🎯 Nova requisição segura:", {
       url: url.substring(0, 50) + "...",
@@ -847,6 +1053,7 @@ app.post("/download", async (req, res) => {
         size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
         duration: durationCheck.duration_formatted || "N/A",
         used_cookies: !!cookieFile,
+        cookie_file: cookieFile ? path.basename(cookieFile) : "NENHUM",
       })
 
       res.json({
@@ -893,6 +1100,139 @@ app.post("/download", async (req, res) => {
       console.log(`📉 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
     }
   }
+})
+
+// 🔍 ROTA DE TESTE DE COOKIES
+app.get("/test-cookies", async (req, res) => {
+  console.log("🧪 === TESTE DE COOKIES INICIADO ===")
+
+  const results = {
+    environment_variables: {},
+    cookie_files: {},
+    pools: {
+      google: googleCookiePool.length,
+      instagram: instagramCookiePool.length,
+      general: generalCookiePool.length,
+    },
+    tests: {},
+    recommendations: [],
+  }
+
+  // 1. Verificar variáveis de ambiente
+  let envVarsFound = 0
+  for (let i = 1; i <= 10; i++) {
+    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      const validation = validateCookieFormat(cookieContent, envVar)
+
+      results.environment_variables[envVar] = {
+        exists: true,
+        length: cookieContent.length,
+        has_equals: cookieContent.includes("="),
+        format_valid: validation.valid,
+        valid_lines: validation.validLines,
+        invalid_lines: validation.invalidLines,
+        issues: validation.issues.slice(0, 3), // Apenas primeiros 3 problemas
+      }
+    } else {
+      results.environment_variables[envVar] = { exists: false }
+    }
+  }
+
+  for (let i = 1; i <= 8; i++) {
+    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
+    const cookieContent = process.env[envVar]
+
+    if (cookieContent) {
+      envVarsFound++
+      const validation = validateCookieFormat(cookieContent, envVar)
+
+      results.environment_variables[envVar] = {
+        exists: true,
+        length: cookieContent.length,
+        has_equals: cookieContent.includes("="),
+        format_valid: validation.valid,
+        valid_lines: validation.validLines,
+        invalid_lines: validation.invalidLines,
+      }
+    } else {
+      results.environment_variables[envVar] = { exists: false }
+    }
+  }
+
+  // 2. Verificar arquivos criados
+  try {
+    if (fs.existsSync(COOKIES_DIR)) {
+      const files = fs.readdirSync(COOKIES_DIR).filter((f) => f.endsWith(".txt"))
+
+      for (const file of files) {
+        const filepath = path.join(COOKIES_DIR, file)
+        const stats = fs.statSync(filepath)
+        const content = fs.readFileSync(filepath, "utf8")
+        const validation = validateCookieFormat(content, file)
+
+        results.cookie_files[file] = {
+          size: stats.size,
+          lines: content.split("\n").length,
+          format_valid: validation.valid,
+          valid_lines: validation.validLines,
+          invalid_lines: validation.invalidLines,
+          issues: validation.issues.slice(0, 2),
+        }
+      }
+    }
+  } catch (error) {
+    results.cookie_files.error = error.message
+  }
+
+  // 3. Testar seleção de cookies
+  const platforms = ["youtube", "instagram", "twitter"]
+
+  for (const platform of platforms) {
+    const selectedCookie = getSmartCookie(platform)
+
+    results.tests[platform] = {
+      cookie_selected: !!selectedCookie,
+      cookie_path: selectedCookie ? path.basename(selectedCookie) : null,
+      cookie_exists: selectedCookie ? fs.existsSync(selectedCookie) : false,
+    }
+  }
+
+  // 4. Gerar recomendações
+  if (envVarsFound === 0) {
+    results.recommendations.push("❌ Nenhuma variável de ambiente encontrada - configure GOOGLE_COOKIE_01, etc.")
+  } else {
+    results.recommendations.push(`✅ ${envVarsFound} variáveis de ambiente encontradas`)
+  }
+
+  if (results.pools.google === 0 && results.pools.instagram === 0) {
+    results.recommendations.push("❌ Nenhum cookie carregado - verifique formato e variáveis")
+  } else {
+    results.recommendations.push(`✅ ${results.pools.google + results.pools.instagram} cookies carregados`)
+  }
+
+  const hasFormatIssues = Object.values(results.environment_variables).some((v) => v.exists && !v.format_valid)
+  if (hasFormatIssues) {
+    results.recommendations.push("⚠️ Alguns cookies têm formato inválido - use formato Netscape do Cookie Editor")
+  } else {
+    results.recommendations.push("✅ Formato dos cookies OK")
+  }
+
+  console.log("🧪 === TESTE DE COOKIES CONCLUÍDO ===")
+
+  res.json({
+    message: "🧪 Teste de Cookies Completo",
+    timestamp: new Date().toISOString(),
+    summary: {
+      env_vars_found: envVarsFound,
+      cookies_loaded: results.pools.google + results.pools.instagram,
+      files_created: Object.keys(results.cookie_files).length,
+    },
+    results: results,
+  })
 })
 
 app.get("/downloads/:fileKey", (req, res) => {
@@ -944,7 +1284,7 @@ app.get("/downloads/:fileKey", (req, res) => {
 app.get("/health", (req, res) => {
   const stats = {
     status: "OK - SECURE",
-    version: "5.1.0 - SECURITY HARDENED + DURATION LIMITS + FIXES",
+    version: "5.2.0 - SECURITY HARDENED + COOKIE DEBUG",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
@@ -963,6 +1303,7 @@ app.get("/health", (req, res) => {
       "✅ Counter bug fixed",
       "✅ 144p quality support",
       "✅ Non-critical error handling",
+      "✅ Cookie debugging system",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
@@ -978,8 +1319,8 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + ALL FIXES!",
-    version: "5.1.0",
+    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + COOKIE DEBUG!",
+    version: "5.2.0",
     status: "online - security active",
     security_level: "HIGH",
     limits: {
@@ -990,14 +1331,22 @@ app.get("/", (req, res) => {
     },
     quality_support: {
       mp3: "64kbps - 320kbps",
-      mp4: "144p, 360p, 480p, 720p, 1080p", // ✅ MOSTRANDO 144P
+      mp4: "144p, 360p, 480p, 720p, 1080p",
     },
+    debug_features: [
+      "🔍 Cookie format validation",
+      "🔍 Environment variable checking",
+      "🔍 Cookie pool debugging",
+      "🔍 Platform-specific cookie selection",
+      "🔍 Real-time cookie usage logging",
+    ],
     fixes_applied: [
       "✅ Counter never goes negative",
       "✅ 144p quality support added",
       "✅ Impersonation warnings eliminated",
       "✅ Subtitle rate limit errors ignored",
       "✅ Non-critical error handling",
+      "✅ Cookie debugging system",
     ],
     features: [
       "✅ Input validation & sanitization",
@@ -1017,6 +1366,7 @@ app.get("/", (req, res) => {
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
       youtube: `✅ Working with ${googleCookiePool.length} cookies`,
     },
+    debug_endpoints: ["GET /test-cookies - Diagnóstico completo de cookies", "GET /health - Status do sistema"],
   })
 })
 
@@ -1031,14 +1381,14 @@ app.use((error, req, res, next) => {
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Rota não encontrada",
-    available_endpoints: ["/", "/health", "/download"],
+    available_endpoints: ["/", "/health", "/download", "/test-cookies"],
   })
 })
 
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + ALL FIXES")
+  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + COOKIE DEBUG")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
@@ -1048,6 +1398,7 @@ app.listen(PORT, () => {
   console.log("  ✅ Contador de downloads corrigido")
   console.log("  ✅ Suporte a 144p adicionado")
   console.log("  ✅ Tratamento de erros não críticos")
+  console.log("  ✅ Sistema de debug de cookies")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -1069,6 +1420,10 @@ app.listen(PORT, () => {
   console.log("🎯 QUALIDADES SUPORTADAS:")
   console.log("  🎵 MP3: 64kbps - 320kbps")
   console.log("  📹 MP4: 144p, 360p, 480p, 720p, 1080p")
+
+  console.log("🔍 ENDPOINTS DE DEBUG:")
+  console.log("  🧪 /test-cookies - Diagnóstico completo")
+  console.log("  ❤️ /health - Status do sistema")
 
   cleanupOldFiles()
 })
