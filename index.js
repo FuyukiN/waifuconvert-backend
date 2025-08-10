@@ -576,7 +576,7 @@ const userAgents = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 ]
 
-// 🔍 VERSÃO MELHORADA COM DEBUG da função createSecureCookieFiles
+// 🔧 FUNÇÃO CORRIGIDA - REMOVIDA VERIFICAÇÃO DE '=' INCORRETA
 function createSecureCookieFiles() {
   console.log("🛡️ Criando arquivos de cookie seguros...")
 
@@ -586,7 +586,7 @@ function createSecureCookieFiles() {
 
   let cookiesCreated = 0
 
-  // Google Cookies
+  // Google Cookies - CORREÇÃO APLICADA
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -597,7 +597,9 @@ function createSecureCookieFiles() {
       const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+      // 🔧 CORREÇÃO: Removida verificação incorreta de '=' - cookies Netscape são válidos sem '='
+      if (cookieContent.length > 100) {
+        // Apenas verificar tamanho mínimo razoável
         // 🔍 VALIDAR FORMATO ANTES DE SALVAR
         const validation = validateCookieFormat(cookieContent, filename)
 
@@ -608,16 +610,17 @@ function createSecureCookieFiles() {
           console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
         } else {
           console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
+          // MAS AINDA ASSIM CRIAR O ARQUIVO - pode ser válido mesmo com aviso
         }
 
         cookiesCreated++
       } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
+        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
       }
     }
   }
 
-  // Instagram Cookies
+  // Instagram Cookies - CORREÇÃO APLICADA
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -628,7 +631,8 @@ function createSecureCookieFiles() {
       const filename = `instagram_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+      // 🔧 CORREÇÃO: Removida verificação incorreta de '='
+      if (cookieContent.length > 100) {
         const validation = validateCookieFormat(cookieContent, filename)
 
         fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
@@ -642,12 +646,12 @@ function createSecureCookieFiles() {
 
         cookiesCreated++
       } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
+        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
       }
     }
   }
 
-  // 🐦 Twitter Cookies - NOVO!
+  // 🐦 Twitter Cookies - CORREÇÃO APLICADA
   for (let i = 1; i <= 5; i++) {
     const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -658,7 +662,8 @@ function createSecureCookieFiles() {
       const filename = `twitter_conta${i.toString().padStart(2, "0")}.txt`
       const filepath = path.join(COOKIES_DIR, filename)
 
-      if (cookieContent.length > 10 && cookieContent.includes("=")) {
+      // 🔧 CORREÇÃO: Removida verificação incorreta de '='
+      if (cookieContent.length > 100) {
         const validation = validateCookieFormat(cookieContent, filename)
         const twitterValidation = validateTwitterCookies(cookieContent)
 
@@ -681,7 +686,7 @@ function createSecureCookieFiles() {
 
         cookiesCreated++
       } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno ou sem '=': ${cookieContent.length} chars`)
+        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
       }
     }
   }
@@ -1290,7 +1295,7 @@ app.get("/test-cookies", async (req, res) => {
       results.environment_variables[envVar] = {
         exists: true,
         length: cookieContent.length,
-        has_equals: cookieContent.includes("="),
+        has_equals: cookieContent.includes("="), // 🔧 MANTIDO PARA COMPATIBILIDADE, MAS NÃO USADO NA VALIDAÇÃO
         format_valid: validation.valid,
         valid_lines: validation.validLines,
         invalid_lines: validation.invalidLines,
@@ -1433,13 +1438,14 @@ app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES CONCLUÍDO ===")
 
   res.json({
-    message: "🧪 Teste de Cookies Completo - Agora com Twitter!",
+    message: "🧪 Teste de Cookies Completo - CORREÇÃO APLICADA!",
     timestamp: new Date().toISOString(),
     summary: {
       env_vars_found: envVarsFound,
       cookies_loaded: results.pools.google + results.pools.instagram + results.pools.twitter,
       files_created: Object.keys(results.cookie_files).length,
       twitter_nsfw_ready: results.pools.twitter > 0,
+      fix_applied: "✅ Removida verificação incorreta de '=' - cookies Netscape agora carregam corretamente",
     },
     results: results,
   })
@@ -1493,8 +1499,8 @@ app.get("/downloads/:fileKey", (req, res) => {
 
 app.get("/health", (req, res) => {
   const stats = {
-    status: "OK - SECURE",
-    version: "5.3.0 - SECURITY HARDENED + TWITTER SUPPORT",
+    status: "OK - SECURE + COOKIE FIX APPLIED",
+    version: "5.4.0 - COOKIE VALIDATION FIXED + TWITTER SUPPORT",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
@@ -1515,6 +1521,7 @@ app.get("/health", (req, res) => {
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
       "✅ Twitter NSFW support",
+      "✅ Cookie validation fixed - Netscape format now works",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
@@ -1531,9 +1538,9 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW!",
-    version: "5.3.0",
-    status: "online - security active",
+    message: "🛡️ WaifuConvert Backend - COOKIE VALIDATION FIXED + TWITTER NSFW!",
+    version: "5.4.0",
+    status: "online - security active + cookie fix applied",
     security_level: "HIGH",
     limits: {
       duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
@@ -1568,6 +1575,8 @@ app.get("/", (req, res) => {
       "✅ Non-critical error handling",
       "✅ Cookie debugging system",
       "✅ Twitter NSFW support added",
+      "✅ Cookie validation fixed - removed incorrect '=' check",
+      "✅ Netscape format cookies now load properly",
     ],
     features: [
       "✅ Input validation & sanitization",
@@ -1580,12 +1589,13 @@ app.get("/", (req, res) => {
       "✅ Resource usage limits",
       "✅ Security headers (Helmet)",
       "✅ Safe cookie management",
+      "✅ Fixed cookie validation for Netscape format",
     ],
     platform_support: {
       tiktok: "✅ Working perfectly",
       twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
-      youtube: `✅ Working with ${googleCookiePool.length} cookies`,
+      youtube: `✅ Working with ${googleCookiePool.length} cookies - COOKIE FIX APPLIED`,
     },
     debug_endpoints: [
       "GET /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
@@ -1612,7 +1622,7 @@ app.use("*", (req, res) => {
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, () => {
-  console.log("🛡️ WaifuConvert Backend - SECURITY HARDENED + TWITTER NSFW SUPPORT")
+  console.log("🛡️ WaifuConvert Backend - COOKIE VALIDATION FIXED + TWITTER NSFW SUPPORT")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
@@ -1624,6 +1634,7 @@ app.listen(PORT, () => {
   console.log("  ✅ Tratamento de erros não críticos")
   console.log("  ✅ Sistema de debug de cookies")
   console.log("  🐦 Suporte completo ao Twitter NSFW")
+  console.log("  🔧 CORREÇÃO APLICADA: Validação de cookies Netscape")
   console.log("  ✅ Whitelist de domínios")
   console.log("  ✅ Limites de recursos")
   console.log("  ✅ Headers de segurança")
@@ -1652,6 +1663,11 @@ app.listen(PORT, () => {
   console.log("  🍪 Pool dedicado de cookies")
   console.log("  🔍 Validação específica de cookies")
   console.log("  ⚡ Otimizado para rate limits")
+
+  console.log("🔧 CORREÇÃO CRÍTICA APLICADA:")
+  console.log("  ✅ Removida verificação incorreta de '=' nos cookies")
+  console.log("  ✅ Cookies Netscape agora carregam corretamente")
+  console.log("  ✅ YouTube deve funcionar normalmente agora")
 
   console.log("🔍 ENDPOINTS DE DEBUG:")
   console.log("  🧪 /test-cookies - Diagnóstico completo")
