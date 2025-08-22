@@ -1310,15 +1310,15 @@ app.post("/download", async (req, res) => {
     if (detectedPlatform === "youtube") {
       try {
         console.log("🎯 Detectado YouTube - usando estratégias avançadas de bypass")
-        
+
         // Atualizar yt-dlp se possível
         await ensureYtDlpUpdated()
-        
+
         const result = await tryYouTubeDownloadStrategies(url, format, quality, uniqueId)
-        
+
         const actualFilename = path.basename(result.finalFilePath)
         const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-        
+
         fileMap.set(downloadKey, {
           actualPath: result.finalFilePath,
           actualFilename: actualFilename,
@@ -1347,16 +1347,15 @@ app.post("/download", async (req, res) => {
           used_strategy: result.strategy,
           youtube_fix_applied: true,
         })
-        
       } catch (error) {
         console.error("❌ Todas as estratégias do YouTube falharam:", error.message)
-        
+
         return res.status(500).json({
           error: "YouTube temporariamente indisponível. Tente novamente em alguns minutos.",
           type: "youtube_blocked",
           platform: "youtube",
           suggestion: "O YouTube está bloqueando downloads no momento. Tente outro vídeo ou aguarde alguns minutos.",
-          technical_details: error.message.substring(0, 200)
+          technical_details: error.message.substring(0, 200),
         })
       }
     }
@@ -1492,51 +1491,46 @@ app.post("/download", async (req, res) => {
         return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
       }
 
-      const downloadKey = `download_
-        error: "Arquivo gerado está corrompido ou vazio"
-      })
-      }
-
-      const downloadKey = `download_$crypto.randomBytes(16).toString("hex").$format === "mp3" ? "mp3" : "mp4"`
+      const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
       fileMap.set(downloadKey, {
         actualPath: finalFilePath,
         actualFilename: actualFilename,
-        userFriendlyName: `$data.title.substring(0, 50)- $format === "mp3" ? quality + "kbps" : quality + "p".$format === "mp3" ? "mp3" : "mp4"`,
+        userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
         size: stats.size,
         created: Date.now(),
       })
 
       console.log("✅ Download seguro concluído:", {
         platform: detectedPlatform,
-        downloadKey: downloadKey,\
-        size: \`${(stats.size / 1024 / 1024).toFixed(2)} MB`,
+        downloadKey: downloadKey,
+        size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
         duration: durationCheck.duration_formatted || "N/A",
         used_cookies: !!cookieFile,
-        cookie_file: cookieFile ? path.basename(cookieFile) : "NENHUM\",\
+        cookie_file: cookieFile ? path.basename(cookieFile) : "NENHUM",
       })
 
-      res.json(\
-        file: `/downloads/$downloadKey`,\
-        filename: `$data.title.substring(0, 50)- $format === "mp3" ? quality + "kbps" : quality + "p".$format === "mp3" ? "mp3" : "mp4"`,
+      res.json({
+        file: `/downloads/${downloadKey}`,
+        filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
         size: stats.size,
         title: data.title,
         duration: data.duration,
-        duration_formatted: durationCheck.duration_formatted,\
+        duration_formatted: durationCheck.duration_formatted,
         platform: detectedPlatform,
-        quality_achieved: format === "mp3" ? `$qualitykbps` : `$qualityp`,
+        quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
         used_cookies: !!cookieFile,
-      })\
+      })
     } catch (error) {
       console.error("❌ Erro no download:", error.message)
-\
-      // 🔧 VERIFICAR SE É ERRO NÃO CRÍTICO ANTES DE FALHAR\
-      if (isNonCriticalError(error.message)) {\
+
+      // 🔧 VERIFICAR SE É ERRO NÃO CRÍTICO ANTES DE FALHAR
+      if (isNonCriticalError(error.message)) {
         console.log("⚠️ Erro não crítico detectado, tentando continuar...")
         // Não retornar erro, deixar continuar
       } else if (isAuthenticationError(error.message)) {
         if (detectedPlatform === "instagram") {
-          return res.status(400).json({\
-            error: \"Instagram requer login. Configure cookies via environment variables.",
+          return res.status(400).json({
+            error: "Instagram requer login. Configure cookies via environment variables.",
             type: "instagram_auth_required",
             platform: "instagram",
           })
@@ -1564,7 +1558,8 @@ app.post("/download", async (req, res) => {
     // 🔧 DECREMENTAR CONTADOR APENAS SE FOI INCREMENTADO
     if (downloadStarted) {
       activeDownloads = Math.max(0, activeDownloads - 1) // 🔧 NUNCA DEIXAR NEGATIVO
-      console.log(`📉 Downloads ativos: $activeDownloads/${MAX_CONCURRENT_DOWNLOADS}`)
+      console.log(`📉 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+    }
   }
 })
 
@@ -1588,7 +1583,7 @@ app.get("/test-cookies", async (req, res) => {
   // 1. Verificar variáveis de ambiente
   let envVarsFound = 0
 
-  // Google\
+  // Google
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -1776,7 +1771,7 @@ app.get("/downloads/:fileKey", (req, res) => {
 
   try {
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
-    res.setHeader(\"Content-Type", "application/octet-stream")
+    res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
     res.setHeader("Pragma", "no-cache")
@@ -1794,7 +1789,7 @@ app.get("/downloads/:fileKey", (req, res) => {
       }
     })
 
-    fileStream.pipe(res)\
+    fileStream.pipe(res)
   } catch (error) {
     console.error("❌ Erro na rota de download:", error)
     if (!res.headersSent) {
@@ -1821,7 +1816,7 @@ app.get("/health", (req, res) => {
       "✅ Secure file handling",
       "✅ Domain whitelist",
       "✅ Resource limits",
-      "✅ Helmet security headers\",\
+      "✅ Helmet security headers",
       "✅ Counter bug fixed",
       "✅ 144p quality support",
       "✅ Non-critical error handling",
@@ -1845,23 +1840,25 @@ app.get("/health", (req, res) => {
   res.json(stats)
 })
 
-app.get("/", (req, res) => \
-  res.json(\
-    message: \"🛡️ WaifuConvert Backend - YOUTUBE FIX APPLIED + COOKIE VALIDATION FIXED + TWITTER NSFW!",
+app.get("/", (req, res) => {
+  res.json({
+    message: "🛡️ WaifuConvert Backend - YOUTUBE FIX APPLIED + COOKIE VALIDATION FIXED + TWITTER NSFW!",
     version: "5.5.0",
     status: "online - security active + youtube fix + cookie fix applied",
     security_level: "HIGH",
-    limits: 
+    limits: {
       duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
       file_size: "1GB máximo",
       rate_limit: "20 downloads a cada 10 minutos",
-      concurrent: "8 downloads simultâneos",,
-    quality_support: 
+      concurrent: "8 downloads simultâneos",
+    },
+    quality_support: {
       mp3: "64kbps - 320kbps",
-      mp4: "144p, 360p, 480p, 720p, 1080p",,
+      mp4: "144p, 360p, 480p, 720p, 1080p",
+    },
     youtube_features: [
       "🎯 Multiple bypass strategies",
-      "🎯 Auto yt-dlp updates",\
+      "🎯 Auto yt-dlp updates",
       "🎯 Advanced cookie rotation",
       "🎯 Fallback methods",
       "🎯 Rate limit handling",
@@ -1873,13 +1870,13 @@ app.get("/", (req, res) => \
       "🔍 Twitter-specific cookie validation",
       "⚡ Optimized for Twitter rate limits",
       "🛡️ Secure Twitter authentication",
-    ],\
+    ],
     debug_features: [
       "🔍 Cookie format validation",
       "🔍 Environment variable checking",
-      \"🔍 Cookie pool debugging",
-      "🔍 Platform-specific cookie selection",\
-      "🔍 Real-time cookie usage logging\",
+      "🔍 Cookie pool debugging",
+      "🔍 Platform-specific cookie selection",
+      "🔍 Real-time cookie usage logging",
       "🐦 Twitter NSFW readiness check",
       "🎯 YouTube strategy testing",
     ],
@@ -1898,7 +1895,7 @@ app.get("/", (req, res) => \
       "🎯 Auto yt-dlp update system",
     ],
     features: [
-      \"✅ Input validation & sanitization",
+      "✅ Input validation & sanitization",
       "✅ Command injection protection",
       "✅ Rate limiting (20 downloads/10min)",
       "✅ Duration limits (2h max for everything)",
@@ -1911,11 +1908,11 @@ app.get("/", (req, res) => \
       "✅ Fixed cookie validation for Netscape format",
       "🎯 Advanced YouTube bypass system",
     ],
-    platform_support: 
+    platform_support: {
       tiktok: "✅ Working perfectly",
-      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + $googleCookiePool.lengthfallback`,
+      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
-      youtube: `🎯 FIXED - Working with advanced bypass strategies + $googleCookiePool.lengthcookies`,
+      youtube: `🎯 FIXED - Working with advanced bypass strategies + ${googleCookiePool.length} cookies`,
     },
     debug_endpoints: [
       "GET /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
@@ -1935,15 +1932,15 @@ app.use((error, req, res, next) => {
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Rota não encontrada",
-    available_endpoints: ["/", "/health", \"/download", \"/test-cookies"],
+    available_endpoints: ["/", "/health", "/download", "/test-cookies"],
   })
 })
-\
+
 setInterval(cleanupOldFiles, 30 * 60 * 1000)
 
 app.listen(PORT, async () => {
   console.log("🛡️ WaifuConvert Backend - YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER NSFW SUPPORT")
-  console.log(`🌐 Porta: $PORT`)
+  console.log(`🌐 Porta: ${PORT}`)
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
   console.log("  ✅ Proteção contra command injection")
@@ -1971,13 +1968,13 @@ app.listen(PORT, async () => {
   loadCookiePool()
 
   console.log("🍪 COOKIES SEGUROS:")
-  console.log(`  🔵 Google: $googleCookiePool.length`)
-  console.log(`  📸 Instagram: $instagramCookiePool.length`)
-  console.log(`  🐦 Twitter: $twitterCookiePool.length`)
-  console.log(`  📊 Total: $generalCookiePool.length`)
+  console.log(`  🔵 Google: ${googleCookiePool.length}`)
+  console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
+  console.log(`  🐦 Twitter: ${twitterCookiePool.length}`)
+  console.log(`  📊 Total: ${generalCookiePool.length}`)
 
   console.log("🕐 LIMITES DE DURAÇÃO:")
-  console.log(`  📹 Qualquer formato: máximo $formatDuration(MAX_DURATION)`)
+  console.log(`  📹 Qualquer formato: máximo ${formatDuration(MAX_DURATION)}`)
   console.log(`  📁 Tamanho máximo: 1GB`)
 
   console.log("🎯 QUALIDADES SUPORTADAS:")
@@ -2007,19 +2004,24 @@ app.listen(PORT, async () => {
   console.log("  🧪 /test-cookies - Diagnóstico completo")
   console.log("  ❤️ /health - Status do sistema")
 
-  cleanupOldFiles())
+  cleanupOldFiles()
+})
 
-process.on("uncaughtException", (error) => 
+process.on("uncaughtException", (error) => {
   console.error("❌ Erro não capturado:", error.message)
-  process.exit(1))
+  process.exit(1)
+})
 
-process.on("unhandledRejection", (reason, promise) => 
-  console.error("❌ Promise rejeitada:", reason))
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Promise rejeitada:", reason)
+})
 
-process.on("SIGTERM", () => 
+process.on("SIGTERM", () => {
   console.log("🛑 Recebido SIGTERM, encerrando graciosamente...")
-  process.exit(0))
+  process.exit(0)
+})
 
-process.on("SIGINT", () => 
+process.on("SIGINT", () => {
   console.log("🛑 Recebido SIGINT, encerrando graciosamente...")
-  process.exit(0))
+  process.exit(0)
+})
