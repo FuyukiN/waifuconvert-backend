@@ -16,6 +16,65 @@ const MAX_CONCURRENT_DOWNLOADS = 8
 const MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB
 const MAX_DURATION = 7200 // 🕐 2 HORAS PARA TUDO (MP3/MP4, qualquer qualidade)
 
+// 🧠 SISTEMA DE LIMPEZA AGRESSIVA DE MEMÓRIA - ADICIONAR AQUI!
+let lastActivity = Date.now()
+
+// 🧠 FUNÇÃO PARA GARBAGE COLLECTION FORÇADO
+function forceGarbageCollection() {
+  if (global.gc) {
+    const before = process.memoryUsage().heapUsed
+    global.gc()
+    const after = process.memoryUsage().heapUsed
+    const freed = Math.round((before - after) / 1024 / 1024)
+    console.log(`🗑️ GC: Liberados ${freed}MB de RAM`)
+    return freed
+  } else {
+    console.log("⚠️ GC não disponível - verifique NODE_OPTIONS=--expose-gc")
+    return 0
+  }
+}
+
+// 🧠 MONITORAMENTO DE MEMÓRIA
+function logMemoryUsage() {
+  const used = process.memoryUsage()
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024)
+
+  console.log(`📊 RAM: ${mb(used.heapUsed)}MB heap / ${mb(used.rss)}MB total`)
+
+  // Alerta se usar mais que 200MB
+  if (used.heapUsed > 200 * 1024 * 1024) {
+    console.log("🚨 Alto uso de RAM - forçando limpeza...")
+    forceGarbageCollection()
+  }
+
+  return {
+    heapUsed: mb(used.heapUsed),
+    rss: mb(used.rss),
+    external: mb(used.external),
+    arrayBuffers: mb(used.arrayBuffers),
+  }
+}
+
+// 🧠 VERIFICAR VARIÁVEIS DE OTIMIZAÇÃO NA INICIALIZAÇÃO
+function checkOptimizationVariables() {
+  console.log("🧠 === VERIFICAÇÃO DE OTIMIZAÇÃO DE MEMÓRIA ===")
+  console.log(`NODE_ENV: ${process.env.NODE_ENV || "❌ NÃO DEFINIDO"}`)
+  console.log(`NODE_OPTIONS: ${process.env.NODE_OPTIONS || "❌ NÃO DEFINIDO"}`)
+  console.log(`MAX_OLD_SPACE_SIZE: ${process.env.MAX_OLD_SPACE_SIZE || "❌ NÃO DEFINIDO"}MB`)
+  console.log(`GC disponível: ${typeof global.gc !== "undefined" ? "✅ SIM" : "❌ NÃO"}`)
+
+  if (typeof global.gc === "undefined") {
+    console.log("🚨 PROBLEMA: GC não está disponível!")
+    console.log("💡 SOLUÇÃO: Adicione NODE_OPTIONS=--expose-gc no Railway")
+  } else {
+    console.log("✅ GC está funcionando - otimização ativa!")
+    // Testar GC imediatamente
+    forceGarbageCollection()
+  }
+
+  console.log("🧠 ============================================")
+}
+
 const ALLOWED_DOMAINS = [
   // TikTok
   "tiktok.com",
@@ -80,9 +139,6 @@ const COOKIES_DIR = path.join(__dirname, "cookies")
 // 🛡️ CONTADOR DE DOWNLOADS ATIVOS - CORRIGIDO
 let activeDownloads = 0
 
-// 🧠 VARIÁVEIS PARA CONTROLE DE MEMÓRIA E ATIVIDADE
-let lastActivity = Date.now()
-
 // 🐦 COOKIES ESSENCIAIS PARA TWITTER NSFW
 const TWITTER_ESSENTIAL_COOKIES = [
   "auth_token", // ⭐⭐⭐ CRÍTICO - Token de autenticação principal
@@ -102,42 +158,6 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
-
-// 🧠 SISTEMA DE LIMPEZA AGRESSIVA DE MEMÓRIA
-function forceGarbageCollection() {
-  if (global.gc) {
-    const before = process.memoryUsage().heapUsed
-    global.gc()
-    const after = process.memoryUsage().heapUsed
-    const freed = Math.round((before - after) / 1024 / 1024)
-    console.log(`🗑️ GC: Liberados ${freed}MB de RAM`)
-    return freed
-  } else {
-    console.log("⚠️ GC não disponível - verifique NODE_OPTIONS=--expose-gc")
-    return 0
-  }
-}
-
-// 🧠 MONITORAMENTO DE MEMÓRIA
-function logMemoryUsage() {
-  const used = process.memoryUsage()
-  const mb = (bytes) => Math.round(bytes / 1024 / 1024)
-
-  console.log(`📊 RAM: ${mb(used.heapUsed)}MB heap / ${mb(used.rss)}MB total`)
-
-  // Alerta se usar mais que 200MB
-  if (used.heapUsed > 200 * 1024 * 1024) {
-    console.log("🚨 Alto uso de RAM - forçando limpeza...")
-    forceGarbageCollection()
-  }
-
-  return {
-    heapUsed: mb(used.heapUsed),
-    rss: mb(used.rss),
-    external: mb(used.external),
-    arrayBuffers: mb(used.arrayBuffers),
-  }
-}
 
 // 🎯 CORREÇÃO YOUTUBE: Função para atualizar yt-dlp automaticamente
 async function ensureYtDlpUpdated() {
@@ -1608,6 +1628,32 @@ app.post("/download", async (req, res) => {
   }
 })
 
+// 🧠 NOVA ROTA: Status de memória em tempo real
+app.get("/memory", (req, res) => {
+  const memoryStats = logMemoryUsage()
+  const gcAvailable = typeof global.gc !== "undefined"
+
+  res.json({
+    message: "🧠 Status de Memória em Tempo Real",
+    timestamp: new Date().toISOString(),
+    memory: memoryStats,
+    gc_available: gcAvailable,
+    environment_variables: {
+      NODE_OPTIONS: process.env.NODE_OPTIONS || "não definido",
+      NODE_ENV: process.env.NODE_ENV || "não definido",
+      MAX_OLD_SPACE_SIZE: process.env.MAX_OLD_SPACE_SIZE || "não definido",
+    },
+    uptime: Math.round(process.uptime()),
+    active_downloads: activeDownloads,
+    last_activity: Math.round((Date.now() - lastActivity) / 1000) + "s ago",
+    recommendations: [
+      gcAvailable ? "✅ Garbage Collection disponível" : "❌ GC não disponível - verifique NODE_OPTIONS",
+      memoryStats.heapUsed > 200 ? "⚠️ Alto uso de memória - considere limpeza" : "✅ Uso de memória normal",
+      activeDownloads === 0 ? "💤 Servidor inativo - candidato para sleep mode" : "🚀 Servidor ativo",
+    ],
+  })
+})
+
 // 🔍 ROTA DE TESTE DE COOKIES - ATUALIZADA COM TWITTER
 app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE DE COOKIES INICIADO ===")
@@ -1844,32 +1890,6 @@ app.get("/downloads/:fileKey", (req, res) => {
   }
 })
 
-// 🧠 NOVA ROTA: Status de memória em tempo real
-app.get("/memory", (req, res) => {
-  const memoryStats = logMemoryUsage()
-  const gcAvailable = typeof global.gc !== "undefined"
-
-  res.json({
-    message: "🧠 Status de Memória em Tempo Real",
-    timestamp: new Date().toISOString(),
-    memory: memoryStats,
-    gc_available: gcAvailable,
-    environment_variables: {
-      NODE_OPTIONS: process.env.NODE_OPTIONS || "não definido",
-      NODE_ENV: process.env.NODE_ENV || "não definido",
-      MAX_OLD_SPACE_SIZE: process.env.MAX_OLD_SPACE_SIZE || "não definido",
-    },
-    uptime: Math.round(process.uptime()),
-    active_downloads: activeDownloads,
-    last_activity: Math.round((Date.now() - lastActivity) / 1000) + "s ago",
-    recommendations: [
-      gcAvailable ? "✅ Garbage Collection disponível" : "❌ GC não disponível - verifique NODE_OPTIONS",
-      memoryStats.heapUsed > 200 ? "⚠️ Alto uso de memória - considere limpeza" : "✅ Uso de memória normal",
-      activeDownloads === 0 ? "💤 Servidor inativo - candidato para sleep mode" : "🚀 Servidor ativo",
-    ],
-  })
-})
-
 app.get("/health", (req, res) => {
   const memoryStats = logMemoryUsage()
 
@@ -2061,12 +2081,8 @@ app.listen(PORT, async () => {
   )
   console.log(`🌐 Porta: ${PORT}`)
 
-  // 🧠 VERIFICAR VARIÁVEIS DE OTIMIZAÇÃO DE MEMÓRIA
-  console.log("🧠 Verificando variáveis de otimização de memória:")
-  console.log(`NODE_ENV: ${process.env.NODE_ENV || "não definido"}`)
-  console.log(`NODE_OPTIONS: ${process.env.NODE_OPTIONS || "não definido"}`)
-  console.log(`MAX_OLD_SPACE_SIZE: ${process.env.MAX_OLD_SPACE_SIZE || "não definido"}MB`)
-  console.log(`GC disponível: ${typeof global.gc !== "undefined" ? "✅ SIM" : "❌ NÃO - verifique NODE_OPTIONS"}`)
+  // 🧠 VERIFICAR VARIÁVEIS DE OTIMIZAÇÃO DE MEMÓRIA NA INICIALIZAÇÃO
+  checkOptimizationVariables()
 
   console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
   console.log("  ✅ Validação rigorosa de entrada")
