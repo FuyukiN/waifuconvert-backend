@@ -10,6 +10,9 @@ const crypto = require("crypto")
 
 const app = express()
 
+// 🛡️ CONFIAR NO RAILWAY PROXY
+app.set('trust proxy', true)
+
 // 🛡️ CONFIGURAÇÕES OTIMIZADAS - SEM SLEEP MODE
 const PORT = process.env.PORT || 8080
 const MAX_CONCURRENT_DOWNLOADS = 4 // REDUZIDO para economia
@@ -1813,3 +1816,4 @@ process.on("SIGINT", () => {
 
   process.exit(0)
 })
+
