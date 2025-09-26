@@ -785,7 +785,7 @@ function generateSecureFilename(title, quality, format, uniqueId) {
   return `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
 }
 
-// 🛡️ VALIDAÇÃO MAIS RESTRITIVA PARA ECONOMIA
+// 🛡️ VALIDAÇÃO CORRIGIDA - INCLUINDO 240p
 function validateDownloadParams(url, format, quality) {
   const errors = []
 
@@ -812,8 +812,9 @@ function validateDownloadParams(url, format, quality) {
     const q = Number.parseInt(quality)
     if (format === "mp3" && (q < 64 || q > 320)) {
       errors.push("Qualidade de áudio deve estar entre 64 e 320 kbps")
-    } else if (format === "mp4" && ![144, 360, 480, 720, 1080].includes(q)) {
-      errors.push("Qualidade de vídeo deve ser 144p, 360p, 480p, 720p ou 1080p")
+    } else if (format === "mp4" && ![144, 240, 360, 480, 720, 1080].includes(q)) {
+      // 🎯 CORREÇÃO: Adicionado 240p na validação!
+      errors.push("Qualidade de vídeo deve ser 144p, 240p, 360p, 480p, 720p ou 1080p")
     }
   }
 
@@ -1066,7 +1067,7 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO OTIMIZADO
+// 🎯 SELETOR DE FORMATO CORRIGIDO - INCLUINDO 240p
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
     return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
@@ -1079,6 +1080,7 @@ function getFormatSelector(format, quality, platform) {
     if (q >= 720) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
     if (q >= 480) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
     if (q >= 360) return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+    if (q >= 240) return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best" // 🎯 ADICIONADO 240p
     return "best[height<=144][ext=mp4]/best[height<=144]/best[ext=mp4]/best"
   }
 
@@ -1087,6 +1089,7 @@ function getFormatSelector(format, quality, platform) {
     if (q >= 720) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
     if (q >= 480) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
     if (q >= 360) return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+    if (q >= 240) return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best" // 🎯 ADICIONADO 240p
     return "best[height<=144][ext=mp4]/best[height<=144]/best[ext=mp4]/best"
   }
 
@@ -1099,6 +1102,9 @@ function getFormatSelector(format, quality, platform) {
     return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
   } else if (q >= 360) {
     return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+  } else if (q >= 240) {
+    // 🎯 ADICIONADO 240p para YouTube/Twitter
+    return "bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best"
   } else {
     return "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=144]+bestaudio/best[height<=144][ext=mp4]/best[height<=144]/best[ext=mp4]/best"
   }
@@ -1687,7 +1693,7 @@ app.get("/memory", (req, res) => {
   }
 
   res.json({
-    message: "🧠 Status de Memória - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX",
+    message: "🧠 Status de Memória - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX + 240p SUPPORT",
     timestamp: new Date().toISOString(),
     memory: {
       heap_used: heapMB,
@@ -1709,6 +1715,7 @@ app.get("/memory", (req, res) => {
       "💰 Economy mode when inactive",
       "📉 Reduced limits for stability",
       "🎯 YouTube empty file fix applied",
+      "🎯 240p support added",
     ],
     active_downloads: activeDownloads,
     uptime: Math.round(process.uptime()),
@@ -1717,13 +1724,14 @@ app.get("/memory", (req, res) => {
       activeDownloads === 0 ? "💰 Servidor inativo - modo economia ativo" : "🚀 Servidor ativo",
       "🚫 Sleep mode desabilitado - sem crashes CORS",
       "🎯 YouTube empty file handler ativo",
+      "🎯 240p agora suportado para MP4",
     ],
   })
 })
 
 // 🔍 ROTA DE TESTE OTIMIZADA
 app.get("/test-cookies", async (req, res) => {
-  console.log("🧪 === TESTE DE COOKIES (NO SLEEP MODE + YOUTUBE FIX) ===")
+  console.log("🧪 === TESTE DE COOKIES (NO SLEEP MODE + YOUTUBE FIX + 240p) ===")
 
   const results = {
     environment_variables: {},
@@ -1829,9 +1837,9 @@ app.get("/test-cookies", async (req, res) => {
   console.log("🧪 === TESTE CONCLUÍDO ===")
 
   res.json({
-    message: "🧪 Teste de Cookies - NO SLEEP MODE + YOUTUBE FIX VERSION",
+    message: "🧪 Teste de Cookies - NO SLEEP MODE + YOUTUBE FIX + 240p VERSION",
     timestamp: new Date().toISOString(),
-    version: "7.1.0 - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE EMPTY FILE FIX",
+    version: "7.2.0 - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE EMPTY FILE FIX + 240p SUPPORT",
     summary: {
       cookies_loaded: results.pools.google + results.pools.instagram + results.pools.twitter,
       files_created: Object.keys(results.cookie_files).length,
@@ -1840,6 +1848,7 @@ app.get("/test-cookies", async (req, res) => {
       economy_mode: results.economy_status.economy_mode,
       memory_optimization: "🧠 Ultra aggressive cleanup active",
       youtube_fix_status: "🎯 Empty file handler implemented",
+      mp4_240p_status: "🎯 240p support added",
     },
     results: results,
     recommendations: [
@@ -1855,6 +1864,7 @@ app.get("/test-cookies", async (req, res) => {
       "🚫 Sleep mode DESABILITADO - sem crashes CORS",
       "🧠 Limpeza ultra agressiva ativa",
       "🎯 YouTube empty file fix implementado",
+      "🎯 240p agora suportado para downloads MP4",
     ],
   })
 })
@@ -1910,8 +1920,8 @@ app.get("/health", (req, res) => {
   const heapMB = Math.round(memory.heapUsed / 1024 / 1024)
 
   const stats = {
-    status: "OK - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX",
-    version: "7.1.0 - NO SLEEP MODE + ULTRA AGGRESSIVE MEMORY OPTIMIZATION + YOUTUBE EMPTY FILE FIX",
+    status: "OK - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX + 240p SUPPORT",
+    version: "7.2.0 - NO SLEEP MODE + ULTRA AGGRESSIVE MEMORY OPTIMIZATION + YOUTUBE EMPTY FILE FIX + 240p SUPPORT",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION),
@@ -1930,6 +1940,14 @@ app.get("/health", (req, res) => {
       retry_methods: ["Format-specific retry", "No-cookies fallback", "Compatibility mode"],
       detection: "✅ Auto-detect empty files",
       fallback: "✅ Multiple format attempts",
+    },
+    mp4_quality_support: {
+      "144p": "✅ Supported",
+      "240p": "🎯 NEWLY ADDED",
+      "360p": "✅ Supported", 
+      "480p": "✅ Supported",
+      "720p": "✅ Supported",
+      "1080p": "✅ Supported",
     },
     economy_features: [
       "💰 Economy mode when inactive 10+ min",
@@ -1958,6 +1976,7 @@ app.get("/health", (req, res) => {
       "✅ Twitter NSFW support",
       "🚫 Sleep mode disabled",
       "🎯 YouTube empty file protection",
+      "🎯 240p quality support",
     ],
     cookies_loaded: {
       google: googleCookiePool.length,
@@ -1974,12 +1993,13 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "🛡️ WaifuConvert Backend - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX!",
-    version: "7.1.0",
-    status: "online - NO SLEEP MODE + ultra economy optimization + YouTube empty file fix",
+    message: "🛡️ WaifuConvert Backend - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX + 240p SUPPORT!",
+    version: "7.2.0",
+    status: "online - NO SLEEP MODE + ultra economy optimization + YouTube empty file fix + 240p support",
     security_level: "HIGH",
     sleep_mode_status: "🚫 DISABLED - No more CORS crashes!",
     youtube_fix_status: "🎯 EMPTY FILE HANDLER ACTIVE",
+    mp4_240p_status: "🎯 240p SUPPORT ADDED",
     limits: {
       duration: "1 hora máximo (economia)",
       file_size: "512MB máximo (economia)",
@@ -1988,7 +2008,7 @@ app.get("/", (req, res) => {
     },
     quality_support: {
       mp3: "64kbps - 320kbps",
-      mp4: "144p, 360p, 480p, 720p, 1080p",
+      mp4: "144p, 240p, 360p, 480p, 720p, 1080p", // 🎯 ATUALIZADO COM 240p
     },
     youtube_fixes: [
       "🎯 Detecção automática de arquivos vazios",
@@ -2052,6 +2072,7 @@ app.get("/", (req, res) => {
       "🎯 YouTube empty file handler implementado",
       "🎯 3 estratégias de retry para YouTube",
       "🎯 Detecção automática de arquivos corrompidos",
+      "🎯 240p support adicionado para MP4",
     ],
   })
 })
@@ -2073,12 +2094,13 @@ app.use("*", (req, res) => {
 
 // 🚫 REMOVER COMPLETAMENTE O SLEEP MODE - INICIAR SISTEMAS DE ECONOMIA
 app.listen(PORT, async () => {
-  console.log("🛡️ WaifuConvert Backend - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX")
+  console.log("🛡️ WaifuConvert Backend - NO SLEEP MODE + ULTRA ECONOMY + YOUTUBE FIX + 240p SUPPORT")
   console.log(`🌐 Porta: ${PORT}`)
   console.log("🚫 SLEEP MODE COMPLETAMENTE DESABILITADO")
   console.log("🎯 YOUTUBE EMPTY FILE FIX ATIVO")
+  console.log("🎯 240p SUPPORT ADICIONADO")
 
-  console.log("🔒 RECURSOS DE SEGURANÇA + ECONOMIA + YOUTUBE FIX ATIVADOS:")
+  console.log("🔒 RECURSOS DE SEGURANÇA + ECONOMIA + YOUTUBE FIX + 240p ATIVADOS:")
   console.log("  🚫 Sleep mode REMOVIDO - sem crashes CORS")
   console.log("  💓 Keep-alive system ativo")
   console.log("  🧠 Limpeza ultra agressiva de memória")
@@ -2088,6 +2110,7 @@ app.listen(PORT, async () => {
   console.log("  ⏱️ Timeouts otimizados")
   console.log("  🛡️ Rate limiting mais restritivo")
   console.log("  🎯 YouTube empty file handler com 3 estratégias")
+  console.log("  🎯 240p agora suportado para MP4")
 
   const cookiesCreated = createSecureCookieFiles()
   loadCookiePool()
@@ -2110,6 +2133,10 @@ app.listen(PORT, async () => {
   console.log("  🎯 Fallback para formatos alternativos")
   console.log("  🎯 Modo compatibilidade como último recurso")
 
+  console.log("🎯 MP4 QUALITY SUPPORT:")
+  console.log("  📺 144p, 240p, 360p, 480p, 720p, 1080p")
+  console.log("  🎯 240p ADICIONADO - problema resolvido!")
+
   console.log("🚫 SISTEMAS ANTI-SLEEP INICIADOS:")
 
   // Iniciar sistemas de economia
@@ -2130,11 +2157,12 @@ app.listen(PORT, async () => {
   console.log("🧪 Testando limpeza inicial...")
   ultraAggressiveMemoryCleanup()
 
-  console.log("✅ BACKEND PRONTO - SEM SLEEP MODE + YOUTUBE FIX!")
+  console.log("✅ BACKEND PRONTO - SEM SLEEP MODE + YOUTUBE FIX + 240p!")
   console.log("🚫 Crashes CORS eliminados")
   console.log("💰 Economia máxima ativa")
   console.log("🛡️ Estabilidade garantida")
   console.log("🎯 YouTube empty file problem SOLVED!")
+  console.log("🎯 240p MP4 downloads FIXED!")
 })
 
 process.on("uncaughtException", (error) => {
