@@ -7,37 +7,24 @@ const rateLimit = require("express-rate-limit")
 const helmet = require("helmet")
 const validator = require("validator")
 const crypto = require("crypto")
-const compression = require("compression")
 
 const app = express()
 
+// Confiar no proxy do Railway
 app.set("trust proxy", true)
 
-// 🎯 LIMITES ORIGINAIS MANTIDOS
+// Configurações
 const PORT = process.env.PORT || 8080
-const MAX_CONCURRENT_DOWNLOADS = 4 // ✅ MANTIDO
-const MAX_FILE_SIZE = 512 * 1024 * 1024 // ✅ MANTIDO: 512MB
-const MAX_DURATION = 7200 // ✅ MANTIDO: 2 horas
-const FILE_CLEANUP_TIME = 30 * 60 * 1000 // ✅ MANTIDO: 30min
+const MAX_CONCURRENT_DOWNLOADS = 4
+const MAX_FILE_SIZE = 512 * 1024 * 1024 // 512MB
+const MAX_DURATION = 7200 // 2 horas
 
+// Variáveis de controle
 let lastActivity = Date.now()
 let memoryCleanupInterval = null
 let fileCleanupInterval = null
 
-// 🎯 COMPRESSÃO - ÚNICA OTIMIZAÇÃO QUE REALMENTE ECONOMIZA BANDA
-app.use(
-  compression({
-    level: 9,
-    threshold: 1024,
-    filter: (req, res) => {
-      if (req.path.includes("/downloads/")) {
-        return false
-      }
-      return compression.filter(req, res)
-    },
-  }),
-)
-
+// Limpeza ultra agressiva de memória
 function ultraAggressiveMemoryCleanup() {
   try {
     const before = process.memoryUsage().heapUsed
@@ -49,8 +36,7 @@ function ultraAggressiveMemoryCleanup() {
     if (require.cache) {
       const cacheKeys = Object.keys(require.cache)
       const nonEssential = cacheKeys.filter(
-        (key) =>
-          !key.includes("express") && !key.includes("cors") && !key.includes("helmet") && !key.includes("compression"),
+        (key) => !key.includes("express") && !key.includes("cors") && !key.includes("helmet"),
       )
 
       const toDelete = nonEssential.slice(0, Math.floor(nonEssential.length * 0.5))
@@ -84,6 +70,7 @@ function ultraAggressiveMemoryCleanup() {
   }
 }
 
+// Monitoramento contínuo de memória (a cada 2 minutos)
 function startContinuousMemoryMonitoring() {
   memoryCleanupInterval = setInterval(
     () => {
@@ -104,6 +91,7 @@ function startContinuousMemoryMonitoring() {
   )
 }
 
+// Limpeza de arquivos antigos (a cada 5 minutos)
 function startAggressiveFileCleanup() {
   fileCleanupInterval = setInterval(
     () => {
@@ -112,7 +100,7 @@ function startAggressiveFileCleanup() {
 
         const files = fs.readdirSync(DOWNLOADS)
         const now = Date.now()
-        const cleanupThreshold = now - FILE_CLEANUP_TIME
+        const thirtyMinutesAgo = now - 30 * 60 * 1000
 
         let deletedCount = 0
         let freedMB = 0
@@ -122,7 +110,7 @@ function startAggressiveFileCleanup() {
           try {
             const stats = fs.statSync(filePath)
 
-            if (stats.mtime.getTime() < cleanupThreshold) {
+            if (stats.mtime.getTime() < thirtyMinutesAgo) {
               const sizeMB = Math.round(stats.size / 1024 / 1024)
               fs.unlinkSync(filePath)
               deletedCount++
@@ -149,13 +137,14 @@ function startAggressiveFileCleanup() {
   )
 }
 
+// Sistema de keep-alive (a cada 8 minutos)
 function startKeepAliveSystem() {
   setInterval(
     () => {
-      const inactive = Date.now() - lastActivity
-      const inactiveMinutes = Math.round(inactive / 1000 / 60)
+      console.log("💓 Keep-alive")
 
-      console.log(`💓 Keep-alive (${inactiveMinutes}min inativo)`)
+      const memory = process.memoryUsage()
+      console.log(`💓 Heap: ${Math.round(memory.heapUsed / 1024 / 1024)}MB`)
 
       if (activeDownloads === 0) {
         ultraAggressiveMemoryCleanup()
@@ -165,15 +154,17 @@ function startKeepAliveSystem() {
   )
 }
 
+// Sistema de economia de recursos
 class ResourceEconomizer {
   constructor() {
     this.isEconomyMode = false
     this.lastRequest = Date.now()
-    this.economyThreshold = 10 * 60 * 1000
+    this.economyThreshold = 10 * 60 * 1000 // 10 minutos
   }
 
   updateActivity() {
     this.lastRequest = Date.now()
+
     if (this.isEconomyMode) {
       this.exitEconomyMode()
     }
@@ -214,6 +205,7 @@ setInterval(() => {
   resourceEconomizer.checkEconomyMode()
 }, 60 * 1000)
 
+// Domínios permitidos
 const ALLOWED_DOMAINS = [
   "tiktok.com",
   "vm.tiktok.com",
@@ -272,6 +264,7 @@ const userAgents = [
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
+// Handler para correção de arquivos vazios do YouTube
 class YouTubeEmptyFileHandler {
   static async handleEmptyFile(url, format, quality, userAgent, cookieFile, platform, outputPath, attempt = 1) {
     const maxAttempts = 3
@@ -287,6 +280,7 @@ class YouTubeEmptyFileHandler {
     let retryArgs
 
     if (attempt === 1) {
+      // Tentativa 1: Formato específico
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -320,6 +314,7 @@ class YouTubeEmptyFileHandler {
         retryArgs.push("-f", `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`)
       }
     } else if (attempt === 2) {
+      // Tentativa 2: Sem cookies
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -341,6 +336,7 @@ class YouTubeEmptyFileHandler {
         retryArgs.push("-f", "best")
       }
     } else {
+      // Tentativa 3: Modo compatibilidade
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -407,6 +403,7 @@ class YouTubeEmptyFileHandler {
   }
 }
 
+// Verificação de duração do vídeo
 function checkDuration(duration) {
   if (!duration || duration <= 0) {
     return { allowed: true, message: null }
@@ -460,6 +457,7 @@ function formatDuration(seconds) {
   }
 }
 
+// Validação de formato de cookies
 function validateCookieFormat(cookieContent, filename) {
   if (!cookieContent || cookieContent.length < 10) {
     return { valid: false, reason: "Cookie muito pequeno" }
@@ -505,6 +503,7 @@ function validateCookieFormat(cookieContent, filename) {
   }
 }
 
+// Validação específica de cookies do Twitter
 function validateTwitterCookies(cookieContent) {
   const lines = cookieContent.split("\n")
   const foundCookies = new Set()
@@ -537,6 +536,7 @@ function validateTwitterCookies(cookieContent) {
   }
 }
 
+// Middleware de segurança
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -555,6 +555,7 @@ app.use(
   }),
 )
 
+// CORS
 app.use(
   cors({
     origin: [
@@ -584,6 +585,7 @@ app.options("*", (req, res) => {
   res.sendStatus(200)
 })
 
+// Rate limiting
 const downloadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -607,6 +609,7 @@ const generalLimiter = rateLimit({
 app.use(generalLimiter)
 app.use("/download", downloadLimiter)
 
+// Middleware para rastrear atividade
 app.use((req, res, next) => {
   lastActivity = Date.now()
   resourceEconomizer.updateActivity()
@@ -614,6 +617,7 @@ app.use((req, res, next) => {
   next()
 })
 
+// Validação de URL
 function isValidUrl(url) {
   try {
     if (
@@ -692,6 +696,7 @@ function generateSecureFilename(title, quality, format, uniqueId) {
   return `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
 }
 
+// Validação de parâmetros de download
 function validateDownloadParams(url, format, quality) {
   const errors = []
 
@@ -717,6 +722,7 @@ function validateDownloadParams(url, format, quality) {
   return errors
 }
 
+// Execução segura de comandos
 function executeSecureCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const timeout = options.timeout || 300000
@@ -763,6 +769,7 @@ function executeSecureCommand(command, args, options = {}) {
 
 const ytDlpPath = "yt-dlp"
 
+// Criação de arquivos de cookies
 function createSecureCookieFiles() {
   if (!fs.existsSync(COOKIES_DIR)) {
     fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
@@ -770,6 +777,7 @@ function createSecureCookieFiles() {
 
   let cookiesCreated = 0
 
+  // Google Cookies
   for (let i = 1; i <= 10; i++) {
     const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -782,6 +790,7 @@ function createSecureCookieFiles() {
     }
   }
 
+  // Instagram Cookies
   for (let i = 1; i <= 8; i++) {
     const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -794,6 +803,7 @@ function createSecureCookieFiles() {
     }
   }
 
+  // Twitter Cookies
   for (let i = 1; i <= 5; i++) {
     const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
     const cookieContent = process.env[envVar]
@@ -814,6 +824,7 @@ let instagramCookiePool = []
 let twitterCookiePool = []
 let generalCookiePool = []
 
+// Carregamento de cookies
 function loadCookiePool() {
   try {
     if (!fs.existsSync(COOKIES_DIR)) {
@@ -847,6 +858,7 @@ function detectPlatform(url) {
   }
 }
 
+// Seleção inteligente de cookies por plataforma
 function getSmartCookie(platform) {
   let pool = []
 
@@ -878,6 +890,7 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
+// Seleção de formato de qualidade
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
     return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
@@ -903,6 +916,7 @@ function getFormatSelector(format, quality, platform) {
     return "best[height<=144][ext=mp4]/best[height<=144]/best"
   }
 
+  // YouTube, Twitter e outras plataformas
   if (q >= 1080) {
     return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
   } else if (q >= 720) {
@@ -918,6 +932,7 @@ function getFormatSelector(format, quality, platform) {
   }
 }
 
+// Construção de comando yt-dlp
 function buildSecureCommand(userAgent, cookieFile, platform) {
   const baseArgs = [
     "--user-agent",
@@ -987,19 +1002,7 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
   return baseArgs
 }
 
-function isYouTubeCriticalError(errorMessage) {
-  const criticalErrors = [
-    "Did not get any data blocks",
-    "unable to download video data",
-    "no video formats found",
-    "Video unavailable",
-    "video has been removed",
-    "video is private",
-  ]
-
-  return criticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
-}
-
+// Detecção de erros
 function isAuthenticationError(errorMessage) {
   const authErrors = [
     "requires authentication",
@@ -1049,6 +1052,7 @@ function isYouTubeEmptyFileError(errorMessage) {
 
 const fileMap = new Map()
 
+// Busca de arquivo recente
 function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
   try {
     const files = fs.readdirSync(baseDir)
@@ -1085,6 +1089,7 @@ if (!fs.existsSync(COOKIES_DIR)) {
   fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
 }
 
+// Rota principal de download
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false
@@ -1205,13 +1210,8 @@ app.post("/download", async (req, res) => {
           timeout: 300000,
         })
 
-        if (downloadStderr) {
-          if (isYouTubeCriticalError(downloadStderr)) {
-            return res.status(500).json({
-              error: "YouTube: Vídeo indisponível",
-              type: "youtube_critical_error",
-            })
-          }
+        if (downloadStderr && isNonCriticalError(downloadStderr)) {
+          console.log("⚠️ Avisos não críticos ignorados")
         }
 
         let finalFilePath = outputPath
@@ -1224,6 +1224,7 @@ app.post("/download", async (req, res) => {
 
         const stats = fs.statSync(finalFilePath)
 
+        // Verificação de arquivo vazio (YouTube)
         if (stats.size < 1000) {
           if (detectedPlatform === "youtube") {
             try {
@@ -1296,13 +1297,6 @@ app.post("/download", async (req, res) => {
           platform: detectedPlatform,
         })
       } catch (downloadError) {
-        if (isYouTubeCriticalError(downloadError.message)) {
-          return res.status(500).json({
-            error: "YouTube: Vídeo indisponível",
-            type: "youtube_critical_error",
-          })
-        }
-
         if (detectedPlatform === "youtube" && isYouTubeEmptyFileError(downloadError.message)) {
           try {
             const retryResult = await YouTubeEmptyFileHandler.handleEmptyFile(
@@ -1365,13 +1359,6 @@ app.post("/download", async (req, res) => {
         }
       }
     } catch (error) {
-      if (isYouTubeCriticalError(error.message)) {
-        return res.status(500).json({
-          error: "YouTube: Vídeo indisponível",
-          type: "youtube_critical_error",
-        })
-      }
-
       if (isAuthenticationError(error.message)) {
         if (detectedPlatform === "instagram") {
           return res.status(400).json({
@@ -1407,6 +1394,7 @@ app.post("/download", async (req, res) => {
   }
 })
 
+// Rota de status de memória
 app.get("/memory", (req, res) => {
   const memory = process.memoryUsage()
   const heapMB = Math.round(memory.heapUsed / 1024 / 1024)
@@ -1424,6 +1412,7 @@ app.get("/memory", (req, res) => {
   })
 })
 
+// Rota de teste de cookies
 app.get("/test-cookies", async (req, res) => {
   const results = {
     pools: {
@@ -1438,6 +1427,7 @@ app.get("/test-cookies", async (req, res) => {
   res.json(results)
 })
 
+// Rota de download de arquivo
 app.get("/downloads/:fileKey", (req, res) => {
   const fileKey = sanitizeInput(req.params.fileKey, 100)
 
@@ -1460,28 +1450,12 @@ app.get("/downloads/:fileKey", (req, res) => {
     res.setHeader("Cache-Control", "no-cache")
     res.setHeader("X-Content-Type-Options", "nosniff")
 
-    // 🎯 Stream otimizado com buffer menor
-    const fileStream = fs.createReadStream(actualPath, {
-      highWaterMark: 64 * 1024, // 64KB buffer
-    })
+    const fileStream = fs.createReadStream(actualPath)
 
     fileStream.on("error", (error) => {
       if (!res.headersSent) {
         res.status(500).json({ error: "Erro ao ler arquivo" })
       }
-    })
-
-    // 🎯 Auto-delete após envio
-    fileStream.on("end", () => {
-      setTimeout(() => {
-        try {
-          if (fs.existsSync(actualPath)) {
-            fs.unlinkSync(actualPath)
-            fileMap.delete(fileKey)
-            ultraAggressiveMemoryCleanup()
-          }
-        } catch (e) {}
-      }, 30000) // 30s
     })
 
     fileStream.pipe(res)
@@ -1492,6 +1466,7 @@ app.get("/downloads/:fileKey", (req, res) => {
   }
 })
 
+// Rota de health check
 app.get("/health", (req, res) => {
   res.json({
     status: "OK",
@@ -1505,6 +1480,7 @@ app.get("/health", (req, res) => {
   })
 })
 
+// Rota raiz
 app.get("/", (req, res) => {
   res.json({
     message: "WaifuConvert Backend",
@@ -1513,6 +1489,7 @@ app.get("/", (req, res) => {
   })
 })
 
+// Error handlers
 app.use((error, req, res, next) => {
   res.status(500).json({ error: "Erro interno" })
 })
@@ -1521,6 +1498,7 @@ app.use("*", (req, res) => {
   res.status(404).json({ error: "Rota não encontrada" })
 })
 
+// Inicialização do servidor
 app.listen(PORT, async () => {
   console.log(`🛡️ WaifuConvert Backend - Port ${PORT}`)
 
@@ -1536,6 +1514,7 @@ app.listen(PORT, async () => {
   console.log("✅ Backend pronto")
 })
 
+// Process handlers
 process.on("uncaughtException", (error) => {
   console.error("❌ Erro:", error.message)
   process.exit(1)
