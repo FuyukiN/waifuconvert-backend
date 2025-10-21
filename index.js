@@ -13,16 +13,47 @@ const app = express()
 // Confiar no proxy do Railway
 app.set("trust proxy", true)
 
-// Configurações
+// Configurações dinâmicas (ajustadas pelo modo economia)
+let CURRENT_MAX_CONCURRENT_DOWNLOADS = 4
+let CURRENT_MAX_DURATION = 7200 // 2 horas em segundos
+
+const NORMAL_MAX_CONCURRENT = 4
+const NORMAL_MAX_DURATION = 7200 // 2h
+const ECONOMY_MAX_CONCURRENT = 2
+const ECONOMY_MAX_DURATION = 1800 // 30min
+
 const PORT = process.env.PORT || 8080
-const MAX_CONCURRENT_DOWNLOADS = 4
 const MAX_FILE_SIZE = 512 * 1024 * 1024 // 512MB
-const MAX_DURATION = 7200 // 2 horas
 
 // Variáveis de controle
 let lastActivity = Date.now()
 let memoryCleanupInterval = null
 let fileCleanupInterval = null
+let keepAliveInterval = null
+let economyCheckInterval = null
+
+// Sistema de logs organizado
+function logInfo(emoji, message, data = null) {
+  console.log(`${emoji} ${message}`)
+  if (data) {
+    console.log(JSON.stringify(data, null, 2))
+  }
+}
+
+function logError(message, error = null) {
+  console.log(`❌ ${message}`)
+  if (error) {
+    console.log(`   Erro: ${error.message || error}`)
+  }
+}
+
+function logDownload(stage, data) {
+  console.log(`\n${"=".repeat(60)}`)
+  console.log(`📥 ${stage}`)
+  console.log(`${"=".repeat(60)}`)
+  console.log(JSON.stringify(data, null, 2))
+  console.log(`${"=".repeat(60)}\n`)
+}
 
 // Limpeza ultra agressiva de memória
 function ultraAggressiveMemoryCleanup() {
@@ -76,8 +107,9 @@ function startContinuousMemoryMonitoring() {
     () => {
       const memory = process.memoryUsage()
       const heapMB = Math.round(memory.heapUsed / 1024 / 1024)
+      const rssMB = Math.round(memory.rss / 1024 / 1024)
 
-      console.log(`📊 RAM: ${heapMB}MB`)
+      console.log(`📊 RAM: ${heapMB}MB heap / ${rssMB}MB total`)
 
       if (heapMB > 150) {
         ultraAggressiveMemoryCleanup()
@@ -127,7 +159,7 @@ function startAggressiveFileCleanup() {
         })
 
         if (deletedCount > 0) {
-          console.log(`🗑️ ${deletedCount} arquivos, ${freedMB}MB liberados`)
+          console.log(`🗑️ Limpeza de arquivos: ${deletedCount} arquivos, ${freedMB}MB liberados`)
         }
       } catch (error) {
         console.error("❌ Erro limpeza:", error.message)
@@ -137,14 +169,20 @@ function startAggressiveFileCleanup() {
   )
 }
 
-// Sistema de keep-alive (a cada 8 minutos)
+// Sistema de Keep-Alive (a cada 8 minutos)
 function startKeepAliveSystem() {
-  setInterval(
+  keepAliveInterval = setInterval(
     () => {
-      console.log("💓 Keep-alive")
-
       const memory = process.memoryUsage()
-      console.log(`💓 Heap: ${Math.round(memory.heapUsed / 1024 / 1024)}MB`)
+      const heapMB = Math.round(memory.heapUsed / 1024 / 1024)
+
+      if (resourceEconomizer.isEconomyMode) {
+        console.log(`💓 Keep-alive ping - evitando sleep mode`)
+        console.log(`💓 Heap: ${heapMB}MB`)
+      } else {
+        console.log(`💓 Keep-alive ping - evitando sleep mode`)
+        console.log(`💓 Heap: ${heapMB}MB`)
+      }
 
       if (activeDownloads === 0) {
         ultraAggressiveMemoryCleanup()
@@ -154,12 +192,12 @@ function startKeepAliveSystem() {
   )
 }
 
-// Sistema de economia de recursos
+// Sistema de economia de recursos MELHORADO
 class ResourceEconomizer {
   constructor() {
     this.isEconomyMode = false
     this.lastRequest = Date.now()
-    this.economyThreshold = 10 * 60 * 1000 // 10 minutos
+    this.economyThreshold = 10 * 60 * 1000 // 10 minutos de inatividade
   }
 
   updateActivity() {
@@ -172,38 +210,88 @@ class ResourceEconomizer {
 
   checkEconomyMode() {
     const inactive = Date.now() - this.lastRequest
+    const inactiveMinutes = Math.floor(inactive / 60000)
 
+    // Ativar modo economia após 10min de inatividade E sem downloads ativos
     if (inactive > this.economyThreshold && !this.isEconomyMode && activeDownloads === 0) {
-      this.enterEconomyMode()
+      this.enterEconomyMode(inactiveMinutes)
     }
   }
 
-  enterEconomyMode() {
+  enterEconomyMode(inactiveMinutes) {
     this.isEconomyMode = true
-    console.log("💰 Modo economia ativo")
+
+    // Reduzir limites
+    CURRENT_MAX_CONCURRENT_DOWNLOADS = ECONOMY_MAX_CONCURRENT
+    CURRENT_MAX_DURATION = ECONOMY_MAX_DURATION
+
+    console.log(`\n${"=".repeat(60)}`)
+    console.log(`🔥 MODO ECONOMIA ATIVADO - servidor inativo há ${inactiveMinutes}min`)
+    console.log(`${"=".repeat(60)}`)
+    console.log(`🔥 Limites de economia aplicados:`)
+    console.log(
+      JSON.stringify(
+        {
+          concurrent_downloads: `${NORMAL_MAX_CONCURRENT} → ${ECONOMY_MAX_CONCURRENT}`,
+          max_duration: `${formatDuration(NORMAL_MAX_DURATION)} → ${formatDuration(ECONOMY_MAX_DURATION)}`,
+        },
+        null,
+        2,
+      ),
+    )
+    console.log(`${"=".repeat(60)}\n`)
+
     ultraAggressiveMemoryCleanup()
   }
 
   exitEconomyMode() {
     if (!this.isEconomyMode) return
+
     this.isEconomyMode = false
-    console.log("🚀 Modo normal")
+
+    // Restaurar limites normais
+    CURRENT_MAX_CONCURRENT_DOWNLOADS = NORMAL_MAX_CONCURRENT
+    CURRENT_MAX_DURATION = NORMAL_MAX_DURATION
+
+    console.log(`\n${"=".repeat(60)}`)
+    console.log(`🚀 MODO NORMAL ATIVADO - nova requisição detectada`)
+    console.log(`${"=".repeat(60)}`)
+    console.log(`🚀 Limites normais restaurados:`)
+    console.log(
+      JSON.stringify(
+        {
+          concurrent_downloads: CURRENT_MAX_CONCURRENT_DOWNLOADS,
+          max_duration: formatDuration(CURRENT_MAX_DURATION),
+        },
+        null,
+        2,
+      ),
+    )
+    console.log(`${"=".repeat(60)}\n`)
   }
 
   getEconomyStatus() {
     const inactive = Date.now() - this.lastRequest
+    const inactiveMinutes = Math.floor(inactive / 60000)
     return {
       economy_mode: this.isEconomyMode,
-      inactive_time: Math.round(inactive / 1000),
+      inactive_time_minutes: inactiveMinutes,
+      current_limits: {
+        max_concurrent: CURRENT_MAX_CONCURRENT_DOWNLOADS,
+        max_duration: formatDuration(CURRENT_MAX_DURATION),
+      },
     }
   }
 }
 
 const resourceEconomizer = new ResourceEconomizer()
 
-setInterval(() => {
-  resourceEconomizer.checkEconomyMode()
-}, 60 * 1000)
+// Verificar modo economia a cada 1 minuto
+function startEconomyCheck() {
+  economyCheckInterval = setInterval(() => {
+    resourceEconomizer.checkEconomyMode()
+  }, 60 * 1000)
+}
 
 // Domínios permitidos
 const ALLOWED_DOMAINS = [
@@ -269,7 +357,7 @@ class YouTubeEmptyFileHandler {
   static async handleEmptyFile(url, format, quality, userAgent, cookieFile, platform, outputPath, attempt = 1) {
     const maxAttempts = 3
 
-    console.log(`🎯 YouTube retry ${attempt}/${maxAttempts}`)
+    logInfo("🔄", `YouTube Retry Tentativa ${attempt}/${maxAttempts}`)
 
     if (attempt > maxAttempts) {
       throw new Error("YouTube: Todas as tentativas falharam")
@@ -280,7 +368,6 @@ class YouTubeEmptyFileHandler {
     let retryArgs
 
     if (attempt === 1) {
-      // Tentativa 1: Formato específico
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -314,7 +401,6 @@ class YouTubeEmptyFileHandler {
         retryArgs.push("-f", `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`)
       }
     } else if (attempt === 2) {
-      // Tentativa 2: Sem cookies
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -336,7 +422,6 @@ class YouTubeEmptyFileHandler {
         retryArgs.push("-f", "best")
       }
     } else {
-      // Tentativa 3: Modo compatibilidade
       retryArgs = [
         "--user-agent",
         userAgent,
@@ -367,7 +452,9 @@ class YouTubeEmptyFileHandler {
       if (fs.existsSync(outputPath)) {
         const stats = fs.statSync(outputPath)
         if (stats.size > 1000) {
-          console.log(`✅ Retry ${attempt} OK!`)
+          logInfo("✅", `Retry ${attempt} bem-sucedido!`, {
+            size: formatFileSize(stats.size),
+          })
           return { success: true, filePath: outputPath, size: stats.size }
         } else {
           fs.unlinkSync(outputPath)
@@ -403,7 +490,7 @@ class YouTubeEmptyFileHandler {
   }
 }
 
-// Verificação de duração do vídeo
+// Verificação de duração do vídeo (usa limite dinâmico)
 function checkDuration(duration) {
   if (!duration || duration <= 0) {
     return { allowed: true, message: null }
@@ -411,9 +498,9 @@ function checkDuration(duration) {
 
   const durationSeconds = typeof duration === "string" ? parseDurationString(duration) : duration
 
-  if (durationSeconds > MAX_DURATION) {
+  if (durationSeconds > CURRENT_MAX_DURATION) {
     const durationFormatted = formatDuration(durationSeconds)
-    const maxFormatted = formatDuration(MAX_DURATION)
+    const maxFormatted = formatDuration(CURRENT_MAX_DURATION)
 
     return {
       allowed: false,
@@ -433,7 +520,7 @@ function checkDuration(duration) {
 function parseDurationString(durationStr) {
   if (typeof durationStr === "number") return durationStr
 
-  const parts = durationStr.toString().split(":").reverse()
+  const parts = durationStr.split(":").reverse()
   let seconds = 0
 
   if (parts[0]) seconds += Number.parseInt(parts[0]) || 0
@@ -454,6 +541,18 @@ function formatDuration(seconds) {
     const hours = Math.floor(seconds / 3600)
     const mins = Math.floor((seconds % 3600) / 60)
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+  }
+}
+
+function formatFileSize(size) {
+  if (size < 1024) {
+    return `${size} bytes`
+  } else if (size < 1024 * 1024) {
+    const kb = Math.round(size / 1024)
+    return `${kb} KB`
+  } else {
+    const mb = Math.round(size / 1024 / 1024)
+    return `${mb} MB`
   }
 }
 
@@ -1093,12 +1192,16 @@ if (!fs.existsSync(COOKIES_DIR)) {
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false
+  let detectedPlatform = ""
 
   try {
-    if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+    // Verificar limite dinâmico de downloads
+    if (activeDownloads >= CURRENT_MAX_CONCURRENT_DOWNLOADS) {
       return res.status(429).json({
-        error: "Servidor ocupado. Tente em alguns minutos.",
+        error: `Servidor ocupado. Máximo de downloads simultâneos: ${CURRENT_MAX_CONCURRENT_DOWNLOADS}`,
         type: "server_busy",
+        current_limit: CURRENT_MAX_CONCURRENT_DOWNLOADS,
+        economy_mode: resourceEconomizer.isEconomyMode,
       })
     }
 
@@ -1112,6 +1215,17 @@ app.post("/download", async (req, res) => {
       })
     }
 
+    detectedPlatform = detectPlatform(url)
+
+    logDownload("NOVA REQUISIÇÃO", {
+      url: url.substring(0, 100) + (url.length > 100 ? "..." : ""),
+      format,
+      quality,
+      platform: detectedPlatform,
+      economy_mode: resourceEconomizer.isEconomyMode,
+      timestamp: new Date().toISOString(),
+    })
+
     activeDownloads++
     downloadStarted = true
 
@@ -1119,10 +1233,14 @@ app.post("/download", async (req, res) => {
       ultraAggressiveMemoryCleanup()
     }
 
-    const detectedPlatform = detectPlatform(url)
     const cookieFile = getSmartCookie(detectedPlatform)
     const randomUA = getRandomUserAgent()
     const uniqueId = crypto.randomBytes(8).toString("hex")
+
+    logInfo("🍪", "Cookie selecionado", {
+      platform: detectedPlatform,
+      cookie_file: cookieFile ? path.basename(cookieFile) : "sem_cookie",
+    })
 
     const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
 
@@ -1140,11 +1258,19 @@ app.post("/download", async (req, res) => {
         return res.status(500).json({ error: "Resposta JSON inválida" })
       }
 
+      logDownload("ARQUIVO APROVADO", {
+        title: data.title?.substring(0, 80) || "sem_titulo",
+        duration: formatDuration(data.duration || 0),
+        filesize: data.filesize ? formatFileSize(data.filesize) : "desconhecido",
+        platform: detectedPlatform,
+      })
+
       const durationCheck = checkDuration(data.duration)
       if (!durationCheck.allowed) {
         return res.status(400).json({
           error: durationCheck.message,
           type: "duration_exceeded",
+          economy_mode: resourceEconomizer.isEconomyMode,
         })
       }
 
@@ -1204,6 +1330,11 @@ app.post("/download", async (req, res) => {
           ]
         }
       }
+
+      logInfo("🚀", "Iniciando download...", {
+        output: path.basename(outputPath),
+        format_selector: getFormatSelector(format, quality, detectedPlatform).substring(0, 50),
+      })
 
       try {
         const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
@@ -1286,6 +1417,17 @@ app.post("/download", async (req, res) => {
           created: Date.now(),
         })
 
+        logDownload("DOWNLOAD CONCLUÍDO", {
+          platform: detectedPlatform,
+          title: data.title?.substring(0, 60) || "sem_titulo",
+          size: formatFileSize(stats.size),
+          duration: formatDuration(data.duration || 0),
+          format: `${format.toUpperCase()} - ${quality}${format === "mp3" ? "kbps" : "p"}`,
+          used_cookies: cookieFile ? true : false,
+          cookie_file: cookieFile ? path.basename(cookieFile) : null,
+          download_time: `${Math.round((Date.now() - startTime) / 1000)}s`,
+        })
+
         ultraAggressiveMemoryCleanup()
 
         res.json({
@@ -1317,6 +1459,17 @@ app.post("/download", async (req, res) => {
                 userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
                 size: retryResult.size,
                 created: Date.now(),
+              })
+
+              logDownload("DOWNLOAD CONCLUÍDO", {
+                platform: detectedPlatform,
+                title: data.title?.substring(0, 60) || "sem_título",
+                size: formatFileSize(retryResult.size),
+                duration: formatDuration(data.duration || 0),
+                format: `${format.toUpperCase()} - ${quality}${format === "mp3" ? "kbps" : "p"}`,
+                used_cookies: cookieFile ? true : false,
+                cookie_file: cookieFile ? path.basename(cookieFile) : null,
+                download_time: `${Math.round((Date.now() - startTime) / 1000)}s`,
               })
 
               ultraAggressiveMemoryCleanup()
@@ -1380,6 +1533,10 @@ app.post("/download", async (req, res) => {
       }
     }
   } catch (error) {
+    logError("ERRO NO DOWNLOAD", {
+      message: error.message,
+      platform: detectedPlatform,
+    })
     res.status(500).json({ error: "Erro interno" })
   } finally {
     if (downloadStarted) {
@@ -1408,6 +1565,10 @@ app.get("/memory", (req, res) => {
     rss_total: Math.round(memory.rss / 1024 / 1024),
     economy_mode: resourceEconomizer.isEconomyMode,
     active_downloads: activeDownloads,
+    current_limits: {
+      max_concurrent: CURRENT_MAX_CONCURRENT_DOWNLOADS,
+      max_duration: formatDuration(CURRENT_MAX_DURATION),
+    },
     uptime: Math.round(process.uptime()),
   })
 })
@@ -1459,6 +1620,11 @@ app.get("/downloads/:fileKey", (req, res) => {
     })
 
     fileStream.pipe(res)
+
+    logInfo("📤", "Arquivo enviado", {
+      filename: userFriendlyName.substring(0, 60),
+      size: formatFileSize(size),
+    })
   } catch (error) {
     if (!res.headersSent) {
       res.status(500).json({ error: "Erro interno" })
@@ -1472,6 +1638,11 @@ app.get("/health", (req, res) => {
     status: "OK",
     uptime: Math.round(process.uptime()),
     active_downloads: activeDownloads,
+    economy_mode: resourceEconomizer.isEconomyMode,
+    current_limits: {
+      max_concurrent: CURRENT_MAX_CONCURRENT_DOWNLOADS,
+      max_duration: formatDuration(CURRENT_MAX_DURATION),
+    },
     cookies: {
       google: googleCookiePool.length,
       instagram: instagramCookiePool.length,
@@ -1486,11 +1657,13 @@ app.get("/", (req, res) => {
     message: "WaifuConvert Backend",
     status: "online",
     platforms: ["TikTok", "Twitter", "Instagram", "YouTube", "Reddit", "Facebook"],
+    economy_mode: resourceEconomizer.isEconomyMode,
   })
 })
 
 // Error handlers
 app.use((error, req, res, next) => {
+  logError("ERRO INTERNO", error)
   res.status(500).json({ error: "Erro interno" })
 })
 
@@ -1500,23 +1673,32 @@ app.use("*", (req, res) => {
 
 // Inicialização do servidor
 app.listen(PORT, async () => {
-  console.log(`🛡️ WaifuConvert Backend - Port ${PORT}`)
+  console.log(`\n${"=".repeat(60)}`)
+  console.log(`🛡️ WaifuConvert Backend - Porta ${PORT}`)
+  console.log(`${"=".repeat(60)}\n`)
 
   createSecureCookieFiles()
   loadCookiePool()
 
-  console.log(`🍪 Cookies: ${generalCookiePool.length}`)
+  console.log(`🍪 Cookies carregados:`)
+  console.log(`   Google: ${googleCookiePool.length}`)
+  console.log(`   Instagram: ${instagramCookiePool.length}`)
+  console.log(`   Twitter: ${twitterCookiePool.length}`)
+  console.log(`   Total: ${generalCookiePool.length}\n`)
 
   startContinuousMemoryMonitoring()
   startAggressiveFileCleanup()
   startKeepAliveSystem()
+  startEconomyCheck()
 
-  console.log("✅ Backend pronto")
+  console.log(`✅ Backend pronto!`)
+  console.log(`💡 Modo Economia: ativa após 10min de inatividade`)
+  console.log(`💡 Keep-Alive: ping a cada 8min\n`)
 })
 
 // Process handlers
 process.on("uncaughtException", (error) => {
-  console.error("❌ Erro:", error.message)
+  console.error("❌ Erro não capturado:", error.message)
   process.exit(1)
 })
 
@@ -1525,13 +1707,19 @@ process.on("unhandledRejection", (reason) => {
 })
 
 process.on("SIGTERM", () => {
+  console.log("\n⚠️ Recebido SIGTERM - encerrando graciosamente...")
   if (memoryCleanupInterval) clearInterval(memoryCleanupInterval)
   if (fileCleanupInterval) clearInterval(fileCleanupInterval)
+  if (keepAliveInterval) clearInterval(keepAliveInterval)
+  if (economyCheckInterval) clearInterval(economyCheckInterval)
   process.exit(0)
 })
 
 process.on("SIGINT", () => {
+  console.log("\n⚠️ Recebido SIGINT - encerrando graciosamente...")
   if (memoryCleanupInterval) clearInterval(memoryCleanupInterval)
   if (fileCleanupInterval) clearInterval(fileCleanupInterval)
+  if (keepAliveInterval) clearInterval(keepAliveInterval)
+  if (economyCheckInterval) clearInterval(economyCheckInterval)
   process.exit(0)
 })
