@@ -350,12 +350,15 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+  "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
 ]
 
 // Handler para correção de arquivos vazios do YouTube
 class YouTubeEmptyFileHandler {
   static async handleEmptyFile(url, format, quality, userAgent, cookieFile, platform, outputPath, attempt = 1) {
-    const maxAttempts = 3
+    const maxAttempts = 5 // Aumentando tentativas de 3 para 5 para melhor suporte mobile
 
     logInfo("🔄", `YouTube Retry Tentativa ${attempt}/${maxAttempts}`)
 
@@ -381,6 +384,8 @@ class YouTubeEmptyFileHandler {
         "3",
         "--force-json",
         "--no-warnings",
+        "--socket-timeout",
+        "30",
       ]
 
       if (cookieFile) {
@@ -414,6 +419,8 @@ class YouTubeEmptyFileHandler {
         "5",
         "--no-warnings",
         "--ignore-errors",
+        "--socket-timeout",
+        "30",
       ]
 
       if (format === "mp3") {
@@ -421,6 +428,42 @@ class YouTubeEmptyFileHandler {
       } else {
         retryArgs.push("-f", "best")
       }
+    } else if (attempt === 3) {
+      retryArgs = [
+        "--user-agent",
+        userAgent,
+        "--no-playlist",
+        "--extractor-retries",
+        "3",
+        "--fragment-retries",
+        "3",
+        "--no-warnings",
+        "--ignore-errors",
+        "--prefer-free-formats",
+        "--socket-timeout",
+        "30",
+        "--no-cert-verify",
+        "-f",
+        "worst[ext=mp4]/worst",
+      ]
+    } else if (attempt === 4) {
+      retryArgs = [
+        "--user-agent",
+        userAgent,
+        "--no-playlist",
+        "--extractor-retries",
+        "2",
+        "--fragment-retries",
+        "2",
+        "--no-warnings",
+        "--ignore-errors",
+        "--compat-options",
+        "all",
+        "--socket-timeout",
+        "30",
+        "-f",
+        "best",
+      ]
     } else {
       retryArgs = [
         "--user-agent",
@@ -432,16 +475,11 @@ class YouTubeEmptyFileHandler {
         "1",
         "--no-warnings",
         "--ignore-errors",
-        "--compat-options",
-        "all",
-        "--prefer-free-formats",
+        "--socket-timeout",
+        "30",
+        "-f",
+        "worst",
       ]
-
-      if (format === "mp3") {
-        retryArgs.push("--extract-audio", "--audio-format", "mp3")
-      }
-
-      retryArgs.push("-f", "worst")
     }
 
     retryArgs.push("-o", outputPath, url)
@@ -684,21 +722,10 @@ app.options("*", (req, res) => {
   res.sendStatus(200)
 })
 
-// Rate limiting
-const downloadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: {
-    error: "Limite atingido. Tente em 15min.",
-    type: "rate_limit_exceeded",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
+// Rate limiting apenas para requisições gerais (protege contra abuso)
 const generalLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 30,
+  max: 100, // Aumentado para 100 requisições por minuto (downloads ilimitados)
   message: {
     error: "Muitas requisições. Tente em 1min.",
     type: "rate_limit_exceeded",
@@ -706,7 +733,6 @@ const generalLimiter = rateLimit({
 })
 
 app.use(generalLimiter)
-app.use("/download", downloadLimiter)
 
 // Middleware para rastrear atividade
 app.use((req, res, next) => {
@@ -1051,13 +1077,17 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "--add-header",
     "Accept-Language:en-US,en;q=0.9",
     "--add-header",
-    "Accept-Encoding:gzip, deflate",
+    "Accept-Encoding:gzip, deflate, br",
     "--add-header",
-    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "--add-header",
     "Connection:keep-alive",
     "--add-header",
     "Upgrade-Insecure-Requests:1",
+    "--add-header",
+    "Cache-Control:max-age=0",
+    "--socket-timeout",
+    "30",
   ]
 
   if (platform === "tiktok") {
