@@ -1,22 +1,26 @@
 FROM node:20-bookworm-slim
 
+# Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
-    python3.11 \
+    python3 \
     python3-pip \
+    python3-venv \
     ffmpeg \
     curl \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# Criar e ativar ambiente virtual Python
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Atualizar pip primeiro
-RUN python3 -m pip install --upgrade pip
+# Atualizar pip no ambiente virtual
+RUN pip install --upgrade pip
 
-# Instalar yt-dlp (sem a flag --break-system-packages)
-RUN pip3 install yt-dlp
+# Instalar yt-dlp no ambiente virtual
+RUN pip install -U yt-dlp
 
-# Verificar se foi instalado
+# Verificar instalação
 RUN yt-dlp --version
 
 # Criar diretório da aplicação
@@ -39,4 +43,3 @@ EXPOSE 8080
 
 # Comando para iniciar
 CMD ["npm", "start"]
-
