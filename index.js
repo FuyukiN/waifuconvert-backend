@@ -767,7 +767,7 @@ function isValidUrl(url) {
       if (hostname === domain) return true
       if (hostname.endsWith("." + domain)) return true
       if (domain === "tiktok.com" && (hostname.includes("tiktok") || hostname.includes("musically"))) return true
-      if (domain === "twitter.com" && hostname.includes("twimg")) return true
+      if (domain === "twitter.com" && (hostname.includes("twitter") || hostname.includes("x.com"))) return true // Correction: was hostname.includes("twimg")
       if (domain === "youtube.com" && (hostname.includes("youtube") || hostname.includes("youtu"))) return true
       if (domain === "instagram.com" && (hostname.includes("instagram") || hostname.includes("cdninstagram")))
         return true
@@ -867,23 +867,29 @@ function executeSecureCommand(command, args, options = {}) {
 
     child.stderr.on("data", (data) => {
       stderr += data.toString()
+      console.log(`[STDERR] ${data.toString().substring(0, 200)}`)
     })
 
     child.on("close", (code) => {
       if (code === 0) {
         resolve({ stdout, stderr })
       } else {
-        reject(new Error(`Falhou com código ${code}: ${stderr}`))
+        const errorMsg = `Falhou com código ${code}`
+        console.log(`[ERROR_CODE] ${code}`)
+        console.log(`[ERROR_STDERR] ${stderr.substring(0, 500)}`)
+        reject(new Error(`${errorMsg}: ${stderr.substring(0, 500)}`))
       }
     })
 
     child.on("error", (error) => {
+      console.log(`[SPAWN_ERROR] ${error.message}`)
       reject(error)
     })
 
     const timeoutId = setTimeout(() => {
+      console.log(`[TIMEOUT] Comando expirou após ${timeout}ms`)
       child.kill("SIGKILL")
-      reject(new Error("Timeout"))
+      reject(new Error(`Timeout após ${timeout}ms`))
     }, timeout)
 
     child.on("close", () => {
@@ -1018,6 +1024,7 @@ function getRandomUserAgent() {
 // Seleção de formato de qualidade
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
+    // Prioriza M4A pela melhor compatibilidade em alguns casos, seguido por MP3 e depois o melhor áudio disponível.
     return "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
   }
 
@@ -1043,6 +1050,7 @@ function getFormatSelector(format, quality, platform) {
 
   // YouTube, Twitter e outras plataformas
   if (q >= 1080) {
+    // Prioriza vídeo de alta qualidade com áudio, depois vídeo de alta qualidade, e por fim o melhor geral.
     return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
   } else if (q >= 720) {
     return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
@@ -1086,7 +1094,7 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "Upgrade-Insecure-Requests:1",
     "--add-header",
     "Cache-Control:max-age=0",
-    "--socket-timeout",
+    "--socket-timeout", // Adicionado timeout para conexões
     "30",
   ]
 
@@ -1225,8 +1233,11 @@ app.post("/download", async (req, res) => {
   let detectedPlatform = ""
 
   try {
+    console.log(`[DOWNLOAD_START] Nova requisição recebida`)
+
     // Verificar limite dinâmico de downloads
     if (activeDownloads >= CURRENT_MAX_CONCURRENT_DOWNLOADS) {
+      console.log(`[LIMIT_REACHED] Downloads ativos: ${activeDownloads}/${CURRENT_MAX_CONCURRENT_DOWNLOADS}`)
       return res.status(429).json({
         error: `Servidor ocupado. Máximo de downloads simultâneos: ${CURRENT_MAX_CONCURRENT_DOWNLOADS}`,
         type: "server_busy",
@@ -1237,8 +1248,11 @@ app.post("/download", async (req, res) => {
 
     const { url, format, quality } = req.body
 
+    console.log(`[PARAMS] URL: ${url?.substring(0, 80)}... Format: ${format} Quality: ${quality}`)
+
     const validationErrors = validateDownloadParams(url, format, quality)
     if (validationErrors.length > 0) {
+      console.log(`[VALIDATION_ERROR] ${JSON.stringify(validationErrors)}`)
       return res.status(400).json({
         error: "Parâmetros inválidos",
         details: validationErrors,
@@ -1246,6 +1260,7 @@ app.post("/download", async (req, res) => {
     }
 
     detectedPlatform = detectPlatform(url)
+    console.log(`[PLATFORM] Detectada: ${detectedPlatform}`)
 
     logDownload("NOVA REQUISIÇÃO", {
       url: url.substring(0, 100) + (url.length > 100 ? "..." : ""),
@@ -1270,22 +1285,32 @@ app.post("/download", async (req, res) => {
     logInfo("🍪", "Cookie selecionado", {
       platform: detectedPlatform,
       cookie_file: cookieFile ? path.basename(cookieFile) : "sem_cookie",
+      cookie_exists: cookieFile ? fs.existsSync(cookieFile) : false,
     })
 
     const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
 
+    console.log(`[YT_DLP_JSON] Executando: yt-dlp com ${jsonArgs.length} argumentos`)
+
     try {
-      const { stdout: jsonStdout } = await executeSecureCommand(ytDlpPath, jsonArgs, {
+      const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
         timeout: 30000,
       })
+
+      console.log(`[JSON_RESPONSE] Recebido ${jsonStdout.length} bytes`)
 
       let data
       try {
         const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
-        if (!jsonLine) throw new Error("JSON não encontrado")
+        if (!jsonLine) {
+          console.log(`[JSON_ERROR] JSON não encontrado em resposta`)
+          throw new Error("JSON não encontrado")
+        }
         data = JSON.parse(jsonLine)
+        console.log(`[JSON_PARSED] Título: ${data.title?.substring(0, 60)}`)
       } catch (e) {
-        return res.status(500).json({ error: "Resposta JSON inválida" })
+        console.log(`[JSON_PARSE_ERROR] ${e.message}`)
+        return res.status(500).json({ error: "Resposta JSON inválida", details: e.message })
       }
 
       logDownload("ARQUIVO APROVADO", {
@@ -1297,6 +1322,7 @@ app.post("/download", async (req, res) => {
 
       const durationCheck = checkDuration(data.duration)
       if (!durationCheck.allowed) {
+        console.log(`[DURATION_ERROR] ${durationCheck.message}`)
         return res.status(400).json({
           error: durationCheck.message,
           type: "duration_exceeded",
@@ -1305,6 +1331,7 @@ app.post("/download", async (req, res) => {
       }
 
       if (data.filesize && data.filesize > MAX_FILE_SIZE) {
+        console.log(`[SIZE_ERROR] Arquivo muito grande: ${formatFileSize(data.filesize)}`)
         return res.status(400).json({
           error: "Arquivo muito grande. Máximo: 512MB",
           type: "file_too_large",
@@ -1313,6 +1340,8 @@ app.post("/download", async (req, res) => {
 
       const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
       const outputPath = path.join(DOWNLOADS, safeTitle)
+
+      console.log(`[OUTPUT_PATH] ${outputPath}`)
 
       let downloadArgs
       if (format === "mp3") {
@@ -1366,10 +1395,14 @@ app.post("/download", async (req, res) => {
         format_selector: getFormatSelector(format, quality, detectedPlatform).substring(0, 50),
       })
 
+      console.log(`[DOWNLOAD_BEGIN] ${detectedPlatform} - ${format} - ${quality}`)
+
       try {
         const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
           timeout: 300000,
         })
+
+        console.log(`[DOWNLOAD_COMPLETE] Arquivo processado com sucesso`)
 
         if (downloadStderr && isNonCriticalError(downloadStderr)) {
           console.log("⚠️ Avisos não críticos ignorados")
@@ -1377,22 +1410,28 @@ app.post("/download", async (req, res) => {
 
         let finalFilePath = outputPath
         if (!fs.existsSync(finalFilePath)) {
+          console.log(`[FILE_NOT_FOUND] Procurando arquivo recente...`)
           finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
           if (!finalFilePath) {
+            console.log(`[FILE_SEARCH_FAILED] Nenhum arquivo encontrado`)
             return res.status(500).json({ error: "Arquivo não criado" })
           }
+          console.log(`[FILE_FOUND] ${path.basename(finalFilePath)}`)
         }
 
         const stats = fs.statSync(finalFilePath)
+        console.log(`[FILE_SIZE] ${formatFileSize(stats.size)}`)
 
         // Verificação de arquivo vazio (YouTube)
         if (stats.size < 1000) {
+          console.log(`[EMPTY_FILE] Arquivo menor que 1KB`)
           if (detectedPlatform === "youtube") {
             try {
               if (fs.existsSync(finalFilePath)) {
                 fs.unlinkSync(finalFilePath)
               }
 
+              console.log(`[YOUTUBE_RETRY] Iniciando retry para arquivo vazio`)
               const retryResult = await YouTubeEmptyFileHandler.handleEmptyFile(
                 url,
                 format,
@@ -1418,6 +1457,7 @@ app.post("/download", async (req, res) => {
 
                 ultraAggressiveMemoryCleanup()
 
+                console.log(`[SUCCESS_RETRY] Download concluído via retry`)
                 return res.json({
                   file: `/downloads/${downloadKey}`,
                   filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
@@ -1428,12 +1468,14 @@ app.post("/download", async (req, res) => {
                 })
               }
             } catch (retryError) {
+              console.log(`[RETRY_FAILED] ${retryError.message}`)
               return res.status(500).json({
                 error: "YouTube: Arquivo vazio. Tente outro vídeo.",
                 type: "youtube_empty_file",
               })
             }
           } else {
+            console.log(`[CORRUPT_FILE] ${detectedPlatform}`)
             return res.status(500).json({ error: "Arquivo corrompido" })
           }
         }
@@ -1460,6 +1502,7 @@ app.post("/download", async (req, res) => {
 
         ultraAggressiveMemoryCleanup()
 
+        console.log(`[SUCCESS] Download finalizado`)
         res.json({
           file: `/downloads/${downloadKey}`,
           filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
@@ -1469,8 +1512,11 @@ app.post("/download", async (req, res) => {
           platform: detectedPlatform,
         })
       } catch (downloadError) {
+        console.log(`[DOWNLOAD_ERROR] ${downloadError.message}`)
+
         if (detectedPlatform === "youtube" && isYouTubeEmptyFileError(downloadError.message)) {
           try {
+            console.log(`[YOUTUBE_EMPTY_RETRY] Acionando retry automático`)
             const retryResult = await YouTubeEmptyFileHandler.handleEmptyFile(
               url,
               format,
@@ -1504,6 +1550,7 @@ app.post("/download", async (req, res) => {
 
               ultraAggressiveMemoryCleanup()
 
+              console.log(`[SUCCESS_RETRY] Download concluído via retry automático`)
               return res.json({
                 file: `/downloads/${downloadKey}`,
                 filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
@@ -1514,6 +1561,7 @@ app.post("/download", async (req, res) => {
               })
             }
           } catch (retryError) {
+            console.log(`[RETRY_FAILED_FINAL] ${retryError.message}`)
             return res.status(500).json({
               error: "YouTube: Problema persistente. Tente outro.",
               type: "youtube_persistent_error",
@@ -1522,6 +1570,7 @@ app.post("/download", async (req, res) => {
         }
 
         if (isAuthenticationError(downloadError.message)) {
+          console.log(`[AUTH_ERROR] ${detectedPlatform} requer autenticação`)
           if (detectedPlatform === "instagram") {
             return res.status(400).json({
               error: "Instagram: Configure cookies",
@@ -1538,10 +1587,13 @@ app.post("/download", async (req, res) => {
             type: "private_content",
           })
         } else {
+          console.log(`[GENERIC_ERROR] ${downloadError.message}`)
           return res.status(500).json({ error: "Falha no download" })
         }
       }
     } catch (error) {
+      console.log(`[JSON_EXTRACTION_ERROR] ${error.message}`)
+
       if (isAuthenticationError(error.message)) {
         if (detectedPlatform === "instagram") {
           return res.status(400).json({
@@ -1563,14 +1615,17 @@ app.post("/download", async (req, res) => {
       }
     }
   } catch (error) {
+    console.log(`[FATAL_ERROR] ${error.message} ${error.stack}`)
     logError("ERRO NO DOWNLOAD", {
       message: error.message,
       platform: detectedPlatform,
+      stack: error.stack?.substring(0, 300),
     })
-    res.status(500).json({ error: "Erro interno" })
+    res.status(500).json({ error: "Erro interno", details: error.message })
   } finally {
     if (downloadStarted) {
       activeDownloads = Math.max(0, activeDownloads - 1)
+      console.log(`[DOWNLOAD_END] Downloads ativos: ${activeDownloads}`)
 
       if (activeDownloads === 0) {
         setTimeout(() => {
