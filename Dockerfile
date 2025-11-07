@@ -1,13 +1,14 @@
 FROM node:18-bullseye-slim
 
-# Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
-    python3 \
+    python3.11 \
     python3-pip \
     ffmpeg \
     curl \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 # Atualizar pip primeiro
 RUN python3 -m pip install --upgrade pip
@@ -38,4 +39,3 @@ EXPOSE 8080
 
 # Comando para iniciar
 CMD ["npm", "start"]
-
