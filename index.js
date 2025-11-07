@@ -10,8 +10,7 @@ const crypto = require("crypto")
 
 const app = express()
 
-// Confiar no proxy do Railway
-app.set("trust proxy", true)
+// Mantém CORS funcionando sem conflitos
 
 // Configurações dinâmicas (ajustadas pelo modo economia)
 let CURRENT_MAX_CONCURRENT_DOWNLOADS = 4
