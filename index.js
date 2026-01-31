@@ -1002,9 +1002,9 @@ function validateDownloadParams(url, format, quality) {
     const q = Number.parseInt(quality)
     if (format === "mp3" && (q < 64 || q > 320)) {
       errors.push("Qualidade de áudio deve estar entre 64 e 320 kbps")
-    } else if (format === "mp4" && ![144, 360, 480, 720, 1080].includes(q)) {
-      // ✅ ADICIONADO 144P
-      errors.push("Qualidade de vídeo deve ser 144p, 360p, 480p, 720p ou 1080p")
+    } else if (format === "mp4" && ![144, 240, 360, 480, 720, 1080].includes(q)) {
+      // ✅ ADICIONADO 144P e 240P
+      errors.push("Qualidade de vídeo deve ser 144p, 240p, 360p, 480p, 720p ou 1080p")
     }
   }
 
@@ -1278,25 +1278,52 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO ULTRA SIMPLIFICADO - SEMPRE FUNCIONA
-// O yt-dlp vai escolher o melhor formato disponivel automaticamente
+// 🎯 SELETOR DE FORMATO ROBUSTO PARA YOUTUBE E OUTRAS PLATAFORMAS
+// Prioriza formatos que combinam video+audio para evitar erros de merge
 function getFormatSelector(format, quality, platform) {
   // Para MP3/audio: sempre usa bestaudio com fallback para best
   if (format === "mp3") {
-    return "bestaudio/best"
+    return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
   }
 
-  // Para MP4/video: usa "best" que SEMPRE funciona
-  // O yt-dlp automaticamente escolhe o melhor formato disponivel
-  // Isso evita TODOS os erros de "Requested format is not available"
+  // Para MP4/video no YouTube: usar seletor mais robusto
+  if (platform === "youtube") {
+    const q = parseInt(quality) || 720
+    
+    // Estrategia: Tentar formato combinado primeiro (video+audio junto)
+    // Isso evita problemas de merge e erros de "format not available"
+    // Fallback para bestvideo+bestaudio se formato combinado nao existir
+    // Fallback final para "best" que SEMPRE funciona
+    
+    if (q >= 1080) {
+      // Para 1080p+: tentar formatos altos, com fallback agressivo
+      return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+    } else if (q >= 720) {
+      return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+    } else if (q >= 480) {
+      return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+    } else if (q >= 360) {
+      return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+    } else if (q >= 240) {
+      return "bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio/best[height<=240]/best"
+    } else {
+      // 144p ou qualquer qualidade baixa
+      return "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=144]+bestaudio/worst[ext=mp4]/worst/best"
+    }
+  }
+  
+  // Para outras plataformas (Twitter, Instagram, TikTok, etc)
+  // Usar "best" que funciona universalmente
   return "best"
 }
 
 // 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
+// Usado quando todos os outros seletores falharem
 function getSimpleFormatSelector(format) {
   if (format === "mp3") {
-    return "bestaudio/best"
+    return "bestaudio[ext=m4a]/bestaudio/best"
   }
+  // "best" SEMPRE funciona - escolhe o melhor formato combinado disponivel
   return "best"
 }
 
@@ -1406,11 +1433,16 @@ function isNonCriticalError(errorMessage) {
     "Deprecated Feature",
     "deprecated",
     "n challenge solving failed",
-    "Requested format is not available",
+    // REMOVIDO: "Requested format is not available" - Este e um erro critico que precisa de tratamento especial
     "Only images are available",
   ]
 
   return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+}
+
+// 🎯 FUNCAO PARA DETECTAR ERRO DE FORMATO NAO DISPONIVEL
+function isFormatNotAvailableError(errorMessage) {
+  return errorMessage.toLowerCase().includes("requested format is not available")
 }
 
 // 🎯 FUNÇÃO PARA DETECTAR ERROS DE ARQUIVO VAZIO NO YOUTUBE
@@ -1438,20 +1470,27 @@ class YouTubeEmptyFileHandler {
       console.log(`🎯 YouTube Empty File Handler: Tentativa ${retryCount}/${maxRetries}`)
 
       try {
-        // Recriar o comando com parâmetros ligeiramente diferentes ou mais agressivos
+        // Na primeira tentativa, usar formato especifico
+        // Nas tentativas seguintes, usar formato simplificado "best"
+        const formatToUse = retryCount === 1 
+          ? getFormatSelector(format, quality, platform)
+          : getSimpleFormatSelector(format)
+        
+        console.log(`🎯 Usando formato: ${formatToUse}`)
+        
+        // Recriar o comando com parâmetros mais robustos
         const retryArgs = [
           ...buildSecureCommand(userAgent, cookieFile, platform),
           "-f",
-          getFormatSelector(format, quality, platform),
-          format === "mp3" ? "--extract-audio" : "--merge-output-format",
-          format === "mp3" ? "mp3" : "mp4",
-          format === "mp3" ? "--audio-quality" : "",
-          format === "mp3" ? `${Number.parseInt(quality || "128")}k` : "",
+          formatToUse,
+          ...(format === "mp3" 
+            ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+            : ["--merge-output-format", "mp4"]),
           "--add-metadata",
-          format === "mp4" ? "-o" : "",
-          format === "mp4" ? outputPath : "",
+          "-o",
+          outputPath,
           url,
-        ].filter(Boolean) // Remover strings vazias
+        ]
 
         // Tentar obter apenas o vídeo/áudio principal com mais retries
         const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, retryArgs, {
@@ -1460,6 +1499,13 @@ class YouTubeEmptyFileHandler {
 
         if (downloadStderr) {
           console.log("⚠️ stderror durante retry:", downloadStderr.substring(0, 100) + "...")
+          
+          // Se for erro de formato, continuar para proxima tentativa com formato simplificado
+          if (isFormatNotAvailableError(downloadStderr) && retryCount < maxRetries) {
+            console.log("⚠️ Formato nao disponivel, tentando formato simplificado na proxima tentativa...")
+            throw new Error("Formato nao disponivel, tentando fallback")
+          }
+          
           if (isYouTubeCriticalError(downloadStderr)) {
             throw new Error(`YouTube critical error during retry: ${downloadStderr}`)
           }
@@ -1646,7 +1692,35 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
       })
 
       if (downloadStderr) {
-        if (isYouTubeCriticalError(downloadStderr)) {
+        // 🎯 Verificar erro de formato primeiro - nao e critico, pode tentar fallback
+        if (isFormatNotAvailableError(downloadStderr)) {
+          console.log("⚠️ Formato nao disponivel, tentando fallback com 'best'...")
+          
+          // Tentar com formato simplificado
+          const fallbackArgs = [
+            ...baseArgs,
+            "-f",
+            getSimpleFormatSelector(format),
+            ...(format === "mp3" 
+              ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+              : ["--merge-output-format", "mp4"]),
+            "--add-metadata",
+            "-o",
+            outputPath,
+            url,
+          ]
+          
+          const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
+            timeout: 300000,
+          })
+          
+          if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
+            throw new Error(`YouTube Critical Error after fallback: ${fallbackStderr.substring(0, 300)}`)
+          }
+          
+          console.log("✅ Download com formato fallback bem-sucedido!")
+          // Continuar para verificar arquivo
+        } else if (isYouTubeCriticalError(downloadStderr)) {
           console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
           throw new Error(`YouTube Critical Error: ${downloadStderr.substring(0, 300)}`)
         } else if (isNonCriticalError(downloadStderr)) {
@@ -1894,10 +1968,11 @@ app.post("/download", async (req, res) => {
       let downloadArgs
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
+        const audioFormatSelector = getFormatSelector("mp3", quality, detectedPlatform)
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
-          "bestaudio/best",
+          audioFormatSelector,
           "-x",
           "--audio-format",
           "mp3",
@@ -1908,12 +1983,16 @@ app.post("/download", async (req, res) => {
           url,
         ]
       } else {
-        const formatSelector = getFormatSelector("mp4", quality, detectedPlatform)
+        const videoFormatSelector = getFormatSelector("mp4", quality, detectedPlatform)
+        
+        // Para YouTube, adicionar --merge-output-format para garantir MP4
+        const extraArgs = detectedPlatform === "youtube" ? ["--merge-output-format", "mp4"] : []
 
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
-          formatSelector,
+          videoFormatSelector,
+          ...extraArgs,
           "-o",
           outputPath,
           url,
@@ -1928,7 +2007,46 @@ app.post("/download", async (req, res) => {
         })
 
         if (downloadStderr) {
-          if (isYouTubeCriticalError(downloadStderr)) {
+          // 🎯 NOVO: Verificar erro de formato nao disponivel e tentar fallback
+          if (isFormatNotAvailableError(downloadStderr) && detectedPlatform === "youtube") {
+            console.log("⚠️ Formato nao disponivel - tentando com formato simplificado...")
+            
+            // Tentar novamente com formato simplificado "best"
+            const fallbackArgs = [
+              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+              "-f",
+              getSimpleFormatSelector(format),
+              ...(format === "mp3" ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`] : ["--merge-output-format", "mp4"]),
+              "-o",
+              outputPath,
+              url,
+            ]
+            
+            try {
+              const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
+                timeout: 300000,
+              })
+              
+              if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
+                throw new Error(fallbackStderr)
+              }
+              
+              console.log("✅ Download com formato fallback bem-sucedido!")
+              // Continuar com o fluxo normal de verificacao do arquivo
+            } catch (fallbackError) {
+              console.error("❌ Fallback tambem falhou:", fallbackError.message)
+              return res.status(500).json({
+                error: "YouTube: Formato de video nao disponivel para este video",
+                type: "youtube_format_error",
+                details: "Nenhum formato compativel foi encontrado",
+                suggestions: [
+                  "Tente uma qualidade diferente (ex: 720p ao inves de 1080p)",
+                  "Tente baixar apenas o audio (MP3)",
+                  "Alguns videos tem formatos limitados pelo criador",
+                ],
+              })
+            }
+          } else if (isYouTubeCriticalError(downloadStderr)) {
             console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
             return res.status(500).json({
               error: "YouTube: Não foi possível baixar este vídeo",
@@ -2097,6 +2215,81 @@ app.post("/download", async (req, res) => {
           })
         }
 
+        // 🎯 CORREÇÃO YOUTUBE: Verificar se e erro de formato nao disponivel
+        if (detectedPlatform === "youtube" && isFormatNotAvailableError(downloadError.message)) {
+          console.log("🎯 YouTube erro de formato detectado - tentando formato simplificado...")
+          
+          try {
+            const fallbackArgs = [
+              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+              "-f",
+              getSimpleFormatSelector(format),
+              ...(format === "mp3" 
+                ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+                : ["--merge-output-format", "mp4"]),
+              "-o",
+              outputPath,
+              url,
+            ]
+            
+            const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
+              timeout: 300000,
+            })
+            
+            if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
+              throw new Error(fallbackStderr)
+            }
+            
+            // Verificar se arquivo foi criado
+            let finalFilePath = outputPath
+            if (!fs.existsSync(finalFilePath)) {
+              finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
+            }
+            
+            if (finalFilePath && fs.existsSync(finalFilePath)) {
+              const stats = fs.statSync(finalFilePath)
+              if (stats.size > 1000) {
+                const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
+                fileMap.set(downloadKey, {
+                  actualPath: finalFilePath,
+                  actualFilename: path.basename(finalFilePath),
+                  userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+                  size: stats.size,
+                  created: Date.now(),
+                })
+                
+                ultraAggressiveMemoryCleanup()
+                
+                return res.json({
+                  file: `/downloads/${downloadKey}`,
+                  filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+                  size: stats.size,
+                  title: data.title,
+                  duration: data.duration,
+                  duration_formatted: durationCheck.duration_formatted,
+                  platform: detectedPlatform,
+                  quality_achieved: "best", // Formato fallback
+                  used_cookies: !!cookieFile,
+                  format_fallback_applied: true,
+                })
+              }
+            }
+            
+            throw new Error("Arquivo nao criado apos fallback")
+          } catch (fallbackError) {
+            console.error("❌ YouTube fallback de formato falhou:", fallbackError.message)
+            return res.status(500).json({
+              error: "YouTube: Nenhum formato de video disponivel",
+              type: "youtube_format_error",
+              suggestions: [
+                "Tente uma qualidade diferente (ex: 720p)",
+                "Tente baixar apenas o audio (MP3)",
+                "Alguns videos tem formatos limitados",
+              ],
+            })
+          }
+        }
+        
         // 🎯 CORREÇÃO YOUTUBE: Verificar se é erro de arquivo vazio
         if (detectedPlatform === "youtube" && isYouTubeEmptyFileError(downloadError.message)) {
           console.log("🎯 YouTube erro de arquivo vazio detectado - iniciando retry...")
