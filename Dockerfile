@@ -26,7 +26,7 @@ RUN yt-dlp --version
 # Criar diretório da aplicação
 WORKDIR /app
 
-# Copiar package.json
+# Copiar package.json primeiro (para cache de dependências)
 COPY package*.json ./
 
 # Instalar dependências Node.js
@@ -36,10 +36,18 @@ RUN npm install --production
 COPY . .
 
 # Criar diretórios necessários
-RUN mkdir -p downloads temp
+RUN mkdir -p downloads temp cookies
+
+# Variáveis de ambiente para otimização de memória
+ENV NODE_ENV=production
+ENV NODE_OPTIONS="--max-old-space-size=256 --expose-gc"
 
 # Expor porta
 EXPOSE 8080
 
-# Comando para iniciar
-CMD ["npm", "start"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+# Comando para iniciar (usa node direto, não npm)
+CMD ["node", "index.js"]
