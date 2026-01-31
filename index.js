@@ -11,8 +11,7 @@ const crypto = require("crypto")
 const app = express()
 
 // 🛡️ CONFIAR NO RAILWAY PROXY PARA RATE LIMITING CORRETO
-// Usar número específico em vez de "true" para evitar ERR_ERL_PERMISSIVE_TRUST_PROXY
-app.set("trust proxy", 1)
+app.set("trust proxy", true)
 
 // 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
 const PORT = process.env.PORT || 8080
@@ -806,62 +805,57 @@ function debugCookieSystem() {
   console.log("🔍 === FIM DO DIAGNÓSTICO ===\n")
 }
 
-// 🛡️ MIDDLEWARE DE SEGURANÇA - CORRIGIDO PARA MOBILE
+// 🛡️ MIDDLEWARE DE SEGURANÇA
 app.use(
   helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+      },
+    },
     hsts: {
       maxAge: 31536000,
       includeSubDomains: true,
       preload: true,
     },
-    crossOriginResourcePolicy: { policy: "cross-origin" },
   }),
 )
 
-// 🚨 CORS CONFIGURAÇÃO CRÍTICA - CORRIGIDA PARA MOBILE
+// 🚨 CORS CONFIGURAÇÃO CRÍTICA - CORRIGIDA PARA EVITAR SLEEP MODE ISSUES
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true)
-      const allowedOrigins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://www.waifuconvert.com",
-        "https://waifuconvert.com",
-        "https://waifuconvert.vercel.app",
-      ]
-      if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
-        callback(null, true)
-      } else {
-        callback(null, true)
-      }
-    },
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://www.waifuconvert.com",
+      "https://waifuconvert.com",
+      "https://waifuconvert.vercel.app",
+    ],
     credentials: true,
     optionsSuccessStatus: 200,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "User-Agent"],
-    exposedHeaders: ["Content-Length", "Content-Type", "Content-Disposition"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+    exposedHeaders: ["Content-Length", "Content-Type"],
     preflightContinue: false,
-    maxAge: 86400,
   }),
 )
 
-// 🚨 CORS PREFLIGHT HANDLER - GARANTIR QUE SEMPRE RESPONDA (MOBILE FIX)
+// 🚨 CORS PREFLIGHT HANDLER - GARANTIR QUE SEMPRE RESPONDA
 app.options("*", (req, res) => {
   res.header("Access-Control-Allow-Origin", req.headers.origin || "*")
-  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS,HEAD")
+  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
   res.header(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Content-Length, X-Requested-With, Accept, Origin, User-Agent",
+    "Content-Type, Authorization, Content-Length, X-Requested-With, Accept, Origin",
   )
   res.header("Access-Control-Allow-Credentials", "true")
-  res.header("Access-Control-Max-Age", "86400")
-  res.sendStatus(204)
+  res.sendStatus(200)
 })
 
 // 🛡️ RATE LIMITING MAIS AMIGÁVEL
-// Adicionado validate: false para evitar ERR_ERL_PERMISSIVE_TRUST_PROXY
 const downloadLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 20,
@@ -871,7 +865,6 @@ const downloadLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { trustProxy: false, xForwardedForHeader: false },
 })
 
 const generalLimiter = rateLimit({
@@ -881,7 +874,6 @@ const generalLimiter = rateLimit({
     error: "Muitas requisições. Tente novamente em 1 minuto.",
     type: "rate_limit_exceeded",
   },
-  validate: { trustProxy: false, xForwardedForHeader: false },
 })
 
 app.use(generalLimiter)
@@ -1286,50 +1278,35 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO CORRIGIDO COM 144P E FALLBACKS ROBUSTOS
+// 🎯 SELETOR DE FORMATO CORRIGIDO COM 144P
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
-    // Formato simples e compatível para áudio - múltiplos fallbacks
-    return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+    // Formato simples e compatível para áudio
+    return "bestaudio/best"
   }
 
   const q = Number.parseInt(quality)
 
-  // 🎯 CORREÇÃO YOUTUBE 2024: Quando signature solving falha, apenas formatos básicos estão disponíveis
-  // Usar seletores super simples como fallback final
-  // O problema "Requested format is not available" acontece quando o formato específico não existe
-  // ou quando o YouTube bloqueia acesso aos formatos de alta qualidade
-
   // TikTok e Instagram: formato simples sem merge
   if (platform === "tiktok" || platform === "instagram") {
-    if (q >= 720) return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-    if (q >= 480) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-    if (q >= 360) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-    if (q >= 240) return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-    return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best"
+    if (q >= 720) return "best[height<=1080]/best"
+    if (q >= 480) return "best[height<=720]/best"
+    if (q >= 360) return "best[height<=480]/best"
+    if (q >= 240) return "best[height<=360]/best"
+    return "best[height<=240]/best"
   }
 
-  // YouTube e outras: formato SUPER simplificado para evitar erros de signature
-  // Quando o YouTube bloqueia, só "best" funciona
-  if (q >= 720) return "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
-  if (q >= 480) return "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
-  if (q >= 360) return "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b"
-  if (q >= 240) return "bv*[height<=360]+ba/b[height<=360]/bv*+ba/b"
-  return "bv*[height<=240]+ba/b[height<=240]/bv*+ba/b"
+  // YouTube e outras: formato simplificado sem merge complexo
+  if (q >= 720) return "best[height<=1080]/best"
+  if (q >= 480) return "best[height<=720]/best"
+  if (q >= 360) return "best[height<=480]/best"
+  if (q >= 240) return "best[height<=360]/best"
+  return "best[height<=240]/best"
 }
 
-// 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
-function getSimpleFormatSelector(format) {
-  if (format === "mp3") {
-    return "ba/b" // bestaudio ou best
-  }
-  return "b" // best - funciona sempre
-}
-
-// 🔧 COMANDO SEGURO CORRIGIDO - REMOVIDO --no-call-home (DEPRECATED)
+// 🔧 COMANDO SEGURO CORRIGIDO - SEM IMPERSONATION E LEGENDAS OPCIONAIS
 function buildSecureCommand(userAgent, cookieFile, platform) {
   const baseArgs = [
-    "--no-update",
     "--user-agent",
     userAgent,
     "--no-playlist",
@@ -1340,7 +1317,7 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "3",
     "--retry-sleep",
     "2",
-    // 🎯 REMOVIDO: "--no-call-home" - Esta opção foi deprecated no yt-dlp
+    "--no-call-home",
     "--geo-bypass",
     "--socket-timeout",
     "30",
@@ -1356,17 +1333,6 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
 
   if (platform === "twitter") {
     baseArgs.push("--sleep-interval", "1")
-  }
-
-  // 🎯 YOUTUBE 2024: Opções para resolver problemas de signature e formato
-  if (platform === "youtube") {
-    baseArgs.push(
-      "--extractor-args",
-      "youtube:player_client=web,mweb,android",
-      "--no-warnings",
-      "--ignore-errors",
-      "--no-abort-on-error"
-    )
   }
 
   if (cookieFile) {
@@ -1427,25 +1393,9 @@ function isNonCriticalError(errorMessage) {
     "HTTP Error 429",
     "Too Many Requests",
     "WARNING:",
-    "Signature solving failed", // 🎯 ADICIONADO: Tratar como não crítico e tentar continuar
-    "n challenge solving failed", // 🎯 ADICIONADO: Tratar como não crítico
-    "Some formats may be missing", // 🎯 ADICIONADO: Avisos de formato
-    "Only images are available", // 🎯 ADICIONADO: Tratar como aviso
-    "Deprecated Feature", // 🎯 ADICIONADO: Ignorar avisos de deprecação
   ]
 
   return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
-}
-
-// 🎯 FUNÇÃO PARA DETECTAR ERROS DE FORMATO NÃO DISPONÍVEL
-function isFormatNotAvailableError(errorMessage) {
-  const formatErrors = [
-    "Requested format is not available",
-    "no video formats found",
-    "Only images are available for download",
-    "Use --list-formats",
-  ]
-  return formatErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
 }
 
 // 🎯 FUNÇÃO PARA DETECTAR ERROS DE ARQUIVO VAZIO NO YOUTUBE
@@ -1472,29 +1422,21 @@ class YouTubeEmptyFileHandler {
       retryCount++
       console.log(`🎯 YouTube Empty File Handler: Tentativa ${retryCount}/${maxRetries}`)
 
-try {
-  // 🎯 CORREÇÃO 2024: Usar formato ULTRA SIMPLES quando YouTube bloqueia
-  // "b" = best, "ba" = bestaudio - sempre funciona
-  const robustFormatSelector = format === "mp3"
-    ? "ba/b"
-    : "b"
-
+      try {
         // Recriar o comando com parâmetros ligeiramente diferentes ou mais agressivos
         const retryArgs = [
           ...buildSecureCommand(userAgent, cookieFile, platform),
           "-f",
-          robustFormatSelector, // 🎯 Usar seletor mais robusto
+          getFormatSelector(format, quality, platform),
           format === "mp3" ? "--extract-audio" : "--merge-output-format",
-          format === "mp3" ? undefined : "mp4",
-          format === "mp3" ? "--audio-format" : undefined,
-          format === "mp3" ? "mp3" : undefined,
-          format === "mp3" ? "--audio-quality" : undefined,
-          format === "mp3" ? `${Number.parseInt(quality || "128")}k` : undefined,
+          format === "mp3" ? "mp3" : "mp4",
+          format === "mp3" ? "--audio-quality" : "",
+          format === "mp3" ? `${Number.parseInt(quality || "128")}k` : "",
           "--add-metadata",
-          "-o",
-          outputPath,
+          format === "mp4" ? "-o" : "",
+          format === "mp4" ? outputPath : "",
           url,
-        ].filter(Boolean) // Remover strings vazias e undefined
+        ].filter(Boolean) // Remover strings vazias
 
         // Tentar obter apenas o vídeo/áudio principal com mais retries
         const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, retryArgs, {
@@ -1649,23 +1591,17 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
       const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
       const outputPath = path.join(DOWNLOADS, safeTitle)
 
-// 🎯 CORREÇÃO 2024: Usar seletor ULTRA SIMPLES para evitar bloqueios
-  // "b" = best, "ba" = bestaudio - sempre funciona mesmo quando signature solving falha
-  const robustFormatSelector = format === "mp3"
-    ? "ba/b"
-    : "bv*+ba/b"
-  
-  const q = Number.parseInt(quality || "128")
-  
-  let downloadArgs
-  if (format === "mp3") {
-    downloadArgs = [
-      ...baseArgs,
-      "-f",
-      robustFormatSelector,
-      "--extract-audio",
-      "--audio-format",
-      "mp3",
+      let downloadArgs
+      if (format === "mp3") {
+        const q = Number.parseInt(quality || "128")
+        const formatSelector = getFormatSelector("mp3", quality, "youtube")
+        downloadArgs = [
+          ...baseArgs,
+          "-f",
+          formatSelector,
+          "--extract-audio",
+          "--audio-format",
+          "mp3",
           "--audio-quality",
           `${q}k`,
           "--add-metadata",
@@ -1675,10 +1611,11 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
           url,
         ]
       } else {
+        const formatSelector = getFormatSelector("mp4", quality, "youtube")
         downloadArgs = [
           ...baseArgs,
           "-f",
-          robustFormatSelector,
+          formatSelector,
           "--merge-output-format",
           "mp4",
           "--add-metadata",
@@ -1702,10 +1639,6 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
         } else if (isYouTubeEmptyFileError(downloadStderr)) {
           // Tratar erro de arquivo vazio especificamente para YouTube
           throw new Error(`YouTube Empty File Error: ${downloadStderr.substring(0, 300)}`)
-        } else if (isFormatNotAvailableError(downloadStderr)) {
-          // 🎯 NOVO: Tratar erro de formato não disponível
-          console.log("⚠️ Formato específico não disponível, tentando próxima estratégia...")
-          throw new Error(`Format not available: ${downloadStderr.substring(0, 300)}`)
         }
       }
 
@@ -1943,20 +1876,13 @@ app.post("/download", async (req, res) => {
         filename: safeTitle,
       })
 
-      // 🎯 CORREÇÃO 2024: Usar seletor ULTRA SIMPLES para evitar "Requested format is not available"
-      // Quando o YouTube bloqueia signature, apenas formatos básicos funcionam
-      // "b" = best (qualquer formato), "ba" = bestaudio, "bv*" = best video (any)
-      const robustFormatSelector = format === "mp3" 
-        ? "ba/b" 
-        : "bv*+ba/b"
-
       let downloadArgs
       if (format === "mp3") {
         const q = Number.parseInt(quality || "128")
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
-          robustFormatSelector,
+          "bestaudio/best",
           "-x",
           "--audio-format",
           "mp3",
@@ -1967,12 +1893,12 @@ app.post("/download", async (req, res) => {
           url,
         ]
       } else {
+        const formatSelector = getFormatSelector("mp4", quality, detectedPlatform)
+
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
-          robustFormatSelector,
-          "--merge-output-format",
-          "mp4",
+          formatSelector,
           "-o",
           outputPath,
           url,
@@ -1981,91 +1907,34 @@ app.post("/download", async (req, res) => {
 
       console.log("🚀 Iniciando download...")
 
-      let downloadSuccess = false
-      let downloadStderr = ""
-      let downloadAttempt = 0
-      const maxAttempts = 2
+      try {
+        const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
+          timeout: 300000, // 5 minutos para download
+        })
 
-      while (!downloadSuccess && downloadAttempt < maxAttempts) {
-        downloadAttempt++
-        console.log(`🔄 Tentativa de download ${downloadAttempt}/${maxAttempts}...`)
-
-        try {
-          const result = await executeSecureCommand(ytDlpPath, downloadArgs, {
-            timeout: 300000, // 5 minutos para download
-          })
-          downloadStderr = result.stderr || ""
-          
-          // Verificar se houve erro de formato não disponível
-          if (downloadStderr.includes("Requested format is not available") || 
-              downloadStderr.includes("Only images are available")) {
-            console.log("⚠️ Formato não disponível, tentando formato simples...")
-            
-            // Usar formato ultra simples como fallback
-            const ultraSimpleFormat = format === "mp3" ? "ba/b" : "b"
-            downloadArgs = [
-              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-              "-f",
-              ultraSimpleFormat,
-              ...(format === "mp3" ? ["-x", "--audio-format", "mp3"] : ["--merge-output-format", "mp4"]),
-              "-o",
-              outputPath,
-              url,
-            ]
-            continue // Tentar novamente com formato simples
-          }
-          
-          downloadSuccess = true
-        } catch (downloadError) {
-          downloadStderr = downloadError.stderr || downloadError.message || ""
-          
-          // Se erro de formato, tentar formato simples
-          if (downloadStderr.includes("Requested format is not available") || 
-              downloadStderr.includes("Only images are available")) {
-            console.log("⚠️ Erro de formato detectado, usando fallback...")
-            const ultraSimpleFormat = format === "mp3" ? "ba/b" : "b"
-            downloadArgs = [
-              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-              "-f",
-              ultraSimpleFormat,
-              ...(format === "mp3" ? ["-x", "--audio-format", "mp3"] : ["--merge-output-format", "mp4"]),
-              "-o",
-              outputPath,
-              url,
-            ]
-            continue
-          }
-          
-          // Se não for erro de formato, propagar o erro
-          if (downloadAttempt >= maxAttempts) {
-            throw downloadError
+        if (downloadStderr) {
+          if (isYouTubeCriticalError(downloadStderr)) {
+            console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
+            return res.status(500).json({
+              error: "YouTube: Não foi possível baixar este vídeo",
+              type: "youtube_critical_error",
+              details: "O YouTube bloqueou o download ou o vídeo está indisponível",
+              possible_causes: [
+                "Cookies do YouTube expiraram",
+                "YouTube detectou acesso automatizado",
+                "Vídeo com restrições de região",
+                "Formato de vídeo não disponível",
+              ],
+              suggestions: [
+                "Aguarde alguns minutos e tente novamente",
+                "Tente outro vídeo do YouTube",
+                "Verifique se o vídeo está disponível publicamente",
+              ],
+            })
+          } else if (isNonCriticalError(downloadStderr)) {
+            console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
           }
         }
-      }
-
-      if (downloadStderr) {
-        if (isYouTubeCriticalError(downloadStderr)) {
-          console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
-          return res.status(500).json({
-            error: "YouTube: Não foi possível baixar este vídeo",
-            type: "youtube_critical_error",
-            details: "O YouTube bloqueou o download ou o vídeo está indisponível",
-            possible_causes: [
-              "Cookies do YouTube expiraram",
-              "YouTube detectou acesso automatizado",
-              "Vídeo com restrições de região",
-              "Formato de vídeo não disponível",
-            ],
-            suggestions: [
-              "Aguarde alguns minutos e tente novamente",
-              "Tente outro vídeo do YouTube",
-              "Verifique se o vídeo está disponível publicamente",
-            ],
-          })
-        } else if (isNonCriticalError(downloadStderr)) {
-          console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
-        }
-      }
 
         let finalFilePath = outputPath
         if (!fs.existsSync(finalFilePath)) {
@@ -2589,8 +2458,6 @@ app.get("/test-cookies", async (req, res) => {
       youtube_fix_applied: "✅ Estratégias múltiplas de bypass implementadas",
       memory_optimization_applied: "🧠 Sistema de limpeza agressiva de memória ativado (Railway compatible)",
       fix_applied: "✅ Removida verificação incorreta de '=' - cookies Netscape agora carregam corretamente",
-      deprecated_fix_applied: "✅ Removido --no-call-home (deprecated)",
-      format_selector_fix: "✅ Seletores de formato com múltiplos fallbacks",
     },
     results: results,
   })
@@ -2649,7 +2516,7 @@ app.get("/health", (req, res) => {
     status:
       "OK - SECURE + RAILWAY MEMORY OPTIMIZED + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
     version:
-      "6.2.2 - RAILWAY MEMORY OPTIMIZATION + YOUTUBE BYPASS STRATEGIES + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED + DEPRECATED FLAGS REMOVED",
+      "6.2.1 - RAILWAY MEMORY OPTIMIZATION + YOUTUBE BYPASS STRATEGIES + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED",
     timestamp: new Date().toISOString(),
     limits: {
       max_duration: formatDuration(MAX_DURATION), // 2 horas
@@ -2690,8 +2557,6 @@ app.get("/health", (req, res) => {
       "🎯 YouTube bypass strategies implemented",
       "🎯 Multiple fallback methods for YouTube",
       "🎯 Auto yt-dlp updates",
-      "🎯 Removed deprecated --no-call-home flag",
-      "🎯 Robust format selectors with fallbacks",
       "🧠 Railway-compatible memory management",
       "🧠 Multiple GC methods (native + manual)",
       "🧠 Aggressive cleanup on high memory usage",
@@ -2714,8 +2579,8 @@ app.get("/", (req, res) => {
   res.json({
     message:
       "🛡️ WaifuConvert Backend - RAILWAY MEMORY OPTIMIZED + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
-    version: "6.2.2",
-    status: "online - security active + railway memory optimized + youtube fix + cookie fix + economy mode enabled + deprecated flags removed",
+    version: "6.2.1",
+    status: "online - security active + railway memory optimized + youtube fix + cookie fix + economy mode enabled",
     security_level: "HIGH",
     limits: {
       duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
@@ -2754,9 +2619,6 @@ app.get("/", (req, res) => {
       "🎯 Rate limit handling",
       "🎯 Bot detection bypass",
       "🎯 Empty file error handler with retries",
-      "🎯 Removed deprecated --no-call-home flag",
-      "🎯 Robust format selectors with multiple fallbacks",
-      "🎯 player_client extractor args for signature issues",
     ],
     twitter_features: [
       "🐦 Dedicated Twitter cookie pool",
@@ -2789,9 +2651,6 @@ app.get("/", (req, res) => {
       "🎯 YouTube bypass strategies implemented",
       "🎯 System for fallback on blocked YouTube content",
       "🎯 Auto yt-dlp update system",
-      "🎯 REMOVED: --no-call-home (deprecated in yt-dlp)",
-      "🎯 FIXED: Format selectors with robust fallbacks",
-      "🎯 FIXED: Signature solving issues handled as non-critical",
       "🧠 Railway memory optimization system implemented",
       "🧠 Multiple GC methods for compatibilidade Railway",
       "🚨 CORS sleep mode issue RESOLVIDO (sleep mode disabled)",
@@ -2819,7 +2678,7 @@ app.get("/", (req, res) => {
       tiktok: "✅ Working perfectly",
       twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
       instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
-      youtube: `🎯 FIXED - Working with advanced bypass strategies + ${googleCookiePool.length} cookies + deprecated flags removed`,
+      youtube: `🎯 FIXED - Working with advanced bypass strategies + ${googleCookiePool.length} cookies`,
     },
     debug_endpoints: [
       "🧪 /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
@@ -2872,7 +2731,7 @@ memoryCleanupInterval = setInterval(() => {
   logMemoryUsage()
 }, MEMORY_CLEANUP_INTERVAL)
 
-// Remover a lógica de sleep mode baseada em lastActivity
+// Remover a lógica de sleep mode baseada em `lastActivity`
 // O servidor agora roda continuamente com limpeza periódica.
 
 app.listen(PORT, async () => {
@@ -2896,8 +2755,6 @@ app.listen(PORT, async () => {
   console.log("  🐦 Suporte completo ao Twitter NSFW")
   console.log("  🔧 CORREÇÃO APLICADA: Validação de cookies Netscape")
   console.log("  🎯 YOUTUBE FIX: Estratégias múltiplas de bypass + retry")
-  console.log("  🎯 YOUTUBE FIX: Removido --no-call-home (deprecated)")
-  console.log("  🎯 YOUTUBE FIX: Seletores de formato com fallbacks robustos")
   console.log("  🎯 Auto-atualização do yt-dlp")
   console.log("  🧠 RAILWAY MEMORY OPTIMIZATION: Sistema de limpeza agressiva")
   console.log("  🧠 Múltiplos métodos de GC (nativo + manual)")
@@ -2942,8 +2799,6 @@ app.listen(PORT, async () => {
   console.log("  🎯 Fallback para conteúdo bloqueado")
   console.log("  🎯 Detecção e bypass de bot")
   console.log("  🎯 Tratamento de erro de arquivo vazio com retries")
-  console.log("  🎯 Removido --no-call-home (deprecated)")
-  console.log("  🎯 Seletores de formato com múltiplos fallbacks")
 
   console.log("🧠 RECURSOS DE MEMÓRIA RAILWAY:")
   console.log("  🧠 Limpeza automática a cada 5 minutos")
@@ -2965,9 +2820,6 @@ app.listen(PORT, async () => {
   console.log("  ✅ Cookies Netscape agora carregam corretamente")
   console.log("  🎯 YouTube bypass strategies implementadas + retries")
   console.log("  🎯 Sistema de fallback para YouTube bloqueado")
-  console.log("  🎯 REMOVIDO: --no-call-home (deprecated no yt-dlp)")
-  console.log("  🎯 CORRIGIDO: Seletores de formato com fallbacks robustos")
-  console.log("  🎯 CORRIGIDO: Erros de signature tratados como não críticos")
   console.log("  🧠 Sistema de otimização de memória Railway implementado")
   console.log("  🧠 Múltiplos métodos de GC para compatibilidade Railway")
   console.log("  🚨 CORS sleep mode issue RESOLVIDO (sleep mode desativado)")
