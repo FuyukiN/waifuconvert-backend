@@ -1361,10 +1361,12 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
   }
 
   // YouTube: Adicionar opcoes para resolver problemas de signature e formato
+  // Usar multiplos player clients para maximizar compatibilidade de formato
+  // ios client geralmente tem melhor disponibilidade de formatos
   if (platform === "youtube") {
     baseArgs.push(
       "--extractor-args",
-      "youtube:player_client=web,mweb,android",
+      "youtube:player_client=ios,web,mweb,android",
       "--no-abort-on-error"
     )
   }
@@ -1911,7 +1913,8 @@ app.post("/download", async (req, res) => {
     })
 
     // Tentar obter metadata primeiro para validar e obter informações
-    const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", url]
+    // Adicionado --skip-download para evitar erros de formato durante metadata
+    const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", "--skip-download", url]
 
     console.log(`[YT_DLP_JSON] Executando: yt-dlp com ${jsonArgs.length} argumentos`)
 
@@ -2339,7 +2342,7 @@ app.post("/download", async (req, res) => {
             return res.status(500).json({
               error: "YouTube: Problema persistente com este vídeo. Tente outro.",
               type: "youtube_persistent_error",
-              suggestion: "Este vídeo específico está com problemas. Tente outro vídeo do YouTube.",
+              suggestion: "Este vídeo específico est�� com problemas. Tente outro vídeo do YouTube.",
             })
           }
         }
@@ -2373,6 +2376,114 @@ app.post("/download", async (req, res) => {
       }
     } catch (error) {
       console.error("❌ Erro no metadata:", error.message)
+
+      // 🎯 NOVO: Tratar erro de formato nao disponivel durante metadata
+      // Este erro pode ocorrer quando o YouTube retorna um erro de formato
+      // mesmo durante a obtencao de metadata (yt-dlp valida formatos)
+      if (detectedPlatform === "youtube" && isFormatNotAvailableError(error.message)) {
+        console.log("🎯 YouTube: Erro de formato durante metadata - tentando sem validacao de formato...")
+        
+        try {
+          // Tentar obter metadata sem validacao estrita de formato
+          // Usar --skip-download para apenas obter informacoes
+          const metadataOnlyArgs = [
+            "--user-agent",
+            randomUA,
+            "--no-playlist",
+            "--no-check-certificates",
+            "--geo-bypass",
+            "--no-warnings",
+            "--ignore-errors",
+            "-j",
+            "--skip-download",
+            url,
+          ]
+          
+          if (cookieFile) {
+            metadataOnlyArgs.splice(metadataOnlyArgs.length - 2, 0, "--cookies", cookieFile)
+          }
+          
+          const { stdout: metaStdout } = await executeSecureCommand(ytDlpPath, metadataOnlyArgs, {
+            timeout: 30000,
+          })
+          
+          const jsonLine = metaStdout.split("\n").find((line) => line.trim().startsWith("{"))
+          if (jsonLine) {
+            const metaData = JSON.parse(jsonLine)
+            console.log("✅ Metadata obtido com sucesso via fallback!")
+            
+            // Agora tentar download com formato "best"
+            const safeTitle = generateSecureFilename(metaData.title, quality, format, uniqueId)
+            const outputPath = path.join(DOWNLOADS, safeTitle)
+            
+            const downloadArgs = [
+              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+              "-f",
+              "best", // Usar formato mais simples possivel
+              ...(format === "mp3" 
+                ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+                : ["--merge-output-format", "mp4"]),
+              "-o",
+              outputPath,
+              url,
+            ]
+            
+            const { stderr: dlStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
+              timeout: 300000,
+            })
+            
+            if (dlStderr && isYouTubeCriticalError(dlStderr)) {
+              throw new Error(dlStderr)
+            }
+            
+            // Verificar arquivo
+            let finalFilePath = outputPath
+            if (!fs.existsSync(finalFilePath)) {
+              finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
+            }
+            
+            if (finalFilePath && fs.existsSync(finalFilePath)) {
+              const stats = fs.statSync(finalFilePath)
+              if (stats.size > 1000) {
+                const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
+                fileMap.set(downloadKey, {
+                  actualPath: finalFilePath,
+                  actualFilename: path.basename(finalFilePath),
+                  userFriendlyName: `${metaData.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+                  size: stats.size,
+                  created: Date.now(),
+                })
+                
+                ultraAggressiveMemoryCleanup()
+                
+                return res.json({
+                  file: `/downloads/${downloadKey}`,
+                  filename: `${metaData.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
+                  size: stats.size,
+                  title: metaData.title,
+                  duration: metaData.duration,
+                  platform: detectedPlatform,
+                  quality_achieved: "best",
+                  format_fallback_applied: true,
+                })
+              }
+            }
+          }
+          
+          throw new Error("Metadata fallback nao produziu resultados")
+        } catch (metaFallbackError) {
+          console.error("❌ Fallback de metadata tambem falhou:", metaFallbackError.message)
+          return res.status(500).json({
+            error: "YouTube: Este video tem formatos restritos",
+            type: "youtube_format_restricted",
+            suggestions: [
+              "Tente baixar em uma qualidade diferente",
+              "Alguns videos do YouTube tem formatos limitados",
+              "Tente baixar apenas o audio (MP3)",
+            ],
+          })
+        }
+      }
 
       if (isYouTubeCriticalError(error.message)) {
         console.error("❌ Erro CRÍTICO do YouTube no metadata:", error.message)
