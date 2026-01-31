@@ -11,7 +11,8 @@ const crypto = require("crypto")
 const app = express()
 
 // 🛡️ CONFIAR NO RAILWAY PROXY PARA RATE LIMITING CORRETO
-app.set("trust proxy", true)
+// Usar número específico em vez de "true" para evitar ERR_ERL_PERMISSIVE_TRUST_PROXY
+app.set("trust proxy", 1)
 
 // 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
 const PORT = process.env.PORT || 8080
@@ -860,6 +861,7 @@ app.options("*", (req, res) => {
 })
 
 // 🛡️ RATE LIMITING MAIS AMIGÁVEL
+// Adicionado validate: false para evitar ERR_ERL_PERMISSIVE_TRUST_PROXY
 const downloadLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 20,
@@ -869,6 +871,7 @@ const downloadLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false, xForwardedForHeader: false },
 })
 
 const generalLimiter = rateLimit({
@@ -878,6 +881,7 @@ const generalLimiter = rateLimit({
     error: "Muitas requisições. Tente novamente em 1 minuto.",
     type: "rate_limit_exceeded",
   },
+  validate: { trustProxy: false, xForwardedForHeader: false },
 })
 
 app.use(generalLimiter)
@@ -1285,15 +1289,16 @@ function getRandomUserAgent() {
 // 🎯 SELETOR DE FORMATO CORRIGIDO COM 144P E FALLBACKS ROBUSTOS
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
-    // Formato simples e compatível para áudio
-    return "bestaudio/best"
+    // Formato simples e compatível para áudio - múltiplos fallbacks
+    return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
   }
 
   const q = Number.parseInt(quality)
 
-  // 🎯 CORREÇÃO: Usar seletores mais robustos com múltiplos fallbacks
+  // 🎯 CORREÇÃO YOUTUBE 2024: Quando signature solving falha, apenas formatos básicos estão disponíveis
+  // Usar seletores super simples como fallback final
   // O problema "Requested format is not available" acontece quando o formato específico não existe
-  // Usar "best" como fallback final sempre
+  // ou quando o YouTube bloqueia acesso aos formatos de alta qualidade
 
   // TikTok e Instagram: formato simples sem merge
   if (platform === "tiktok" || platform === "instagram") {
@@ -1304,12 +1309,21 @@ function getFormatSelector(format, quality, platform) {
     return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best"
   }
 
-  // YouTube e outras: formato simplificado com múltiplos fallbacks
-  if (q >= 720) return "best[height<=1080][ext=mp4]/best[height<=1080]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best"
-  if (q >= 480) return "best[height<=720][ext=mp4]/best[height<=720]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best"
-  if (q >= 360) return "best[height<=480][ext=mp4]/best[height<=480]/bestvideo[height<=480]+bestaudio/best[ext=mp4]/best"
-  if (q >= 240) return "best[height<=360][ext=mp4]/best[height<=360]/bestvideo[height<=360]+bestaudio/best[ext=mp4]/best"
-  return "best[height<=240][ext=mp4]/best[height<=240]/bestvideo[height<=240]+bestaudio/best[ext=mp4]/best"
+  // YouTube e outras: formato SUPER simplificado para evitar erros de signature
+  // Quando o YouTube bloqueia, só "best" funciona
+  if (q >= 720) return "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
+  if (q >= 480) return "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
+  if (q >= 360) return "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b"
+  if (q >= 240) return "bv*[height<=360]+ba/b[height<=360]/bv*+ba/b"
+  return "bv*[height<=240]+ba/b[height<=240]/bv*+ba/b"
+}
+
+// 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
+function getSimpleFormatSelector(format) {
+  if (format === "mp3") {
+    return "ba/b" // bestaudio ou best
+  }
+  return "b" // best - funciona sempre
 }
 
 // 🔧 COMANDO SEGURO CORRIGIDO - REMOVIDO --no-call-home (DEPRECATED)
@@ -1344,12 +1358,14 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     baseArgs.push("--sleep-interval", "1")
   }
 
-  // 🎯 YOUTUBE: Adicionar opções extras para resolver problemas de signature
+  // 🎯 YOUTUBE 2024: Opções para resolver problemas de signature e formato
   if (platform === "youtube") {
     baseArgs.push(
       "--extractor-args",
-      "youtube:player_client=web,android",
-      "--no-warnings"
+      "youtube:player_client=web,mweb,android",
+      "--no-warnings",
+      "--ignore-errors",
+      "--no-abort-on-error"
     )
   }
 
@@ -1456,11 +1472,12 @@ class YouTubeEmptyFileHandler {
       retryCount++
       console.log(`🎯 YouTube Empty File Handler: Tentativa ${retryCount}/${maxRetries}`)
 
-      try {
-        // 🎯 CORREÇÃO: Usar formato com mais fallbacks
-        const robustFormatSelector = format === "mp3" 
-          ? "bestaudio/best" 
-          : "best[ext=mp4]/best"
+try {
+  // 🎯 CORREÇÃO 2024: Usar formato ULTRA SIMPLES quando YouTube bloqueia
+  // "b" = best, "ba" = bestaudio - sempre funciona
+  const robustFormatSelector = format === "mp3"
+    ? "ba/b"
+    : "b"
 
         // Recriar o comando com parâmetros ligeiramente diferentes ou mais agressivos
         const retryArgs = [
@@ -1632,21 +1649,23 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
       const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
       const outputPath = path.join(DOWNLOADS, safeTitle)
 
-      // 🎯 CORREÇÃO: Usar seletor de formato mais robusto
-      const robustFormatSelector = format === "mp3" 
-        ? "bestaudio/best" 
-        : "best[ext=mp4]/bestvideo+bestaudio/best"
-
-      let downloadArgs
-      if (format === "mp3") {
-        const q = Number.parseInt(quality || "128")
-        downloadArgs = [
-          ...baseArgs,
-          "-f",
-          robustFormatSelector,
-          "--extract-audio",
-          "--audio-format",
-          "mp3",
+// 🎯 CORREÇÃO 2024: Usar seletor ULTRA SIMPLES para evitar bloqueios
+  // "b" = best, "ba" = bestaudio - sempre funciona mesmo quando signature solving falha
+  const robustFormatSelector = format === "mp3"
+    ? "ba/b"
+    : "bv*+ba/b"
+  
+  const q = Number.parseInt(quality || "128")
+  
+  let downloadArgs
+  if (format === "mp3") {
+    downloadArgs = [
+      ...baseArgs,
+      "-f",
+      robustFormatSelector,
+      "--extract-audio",
+      "--audio-format",
+      "mp3",
           "--audio-quality",
           `${q}k`,
           "--add-metadata",
@@ -1924,10 +1943,12 @@ app.post("/download", async (req, res) => {
         filename: safeTitle,
       })
 
-      // 🎯 CORREÇÃO: Usar seletor de formato mais robusto
+      // 🎯 CORREÇÃO 2024: Usar seletor ULTRA SIMPLES para evitar "Requested format is not available"
+      // Quando o YouTube bloqueia signature, apenas formatos básicos funcionam
+      // "b" = best (qualquer formato), "ba" = bestaudio, "bv*" = best video (any)
       const robustFormatSelector = format === "mp3" 
-        ? "bestaudio/best" 
-        : "best[ext=mp4]/bestvideo+bestaudio/best"
+        ? "ba/b" 
+        : "bv*+ba/b"
 
       let downloadArgs
       if (format === "mp3") {
@@ -1950,6 +1971,8 @@ app.post("/download", async (req, res) => {
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f",
           robustFormatSelector,
+          "--merge-output-format",
+          "mp4",
           "-o",
           outputPath,
           url,
@@ -1958,34 +1981,91 @@ app.post("/download", async (req, res) => {
 
       console.log("🚀 Iniciando download...")
 
-      try {
-        const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-          timeout: 300000, // 5 minutos para download
-        })
+      let downloadSuccess = false
+      let downloadStderr = ""
+      let downloadAttempt = 0
+      const maxAttempts = 2
 
-        if (downloadStderr) {
-          if (isYouTubeCriticalError(downloadStderr)) {
-            console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
-            return res.status(500).json({
-              error: "YouTube: Não foi possível baixar este vídeo",
-              type: "youtube_critical_error",
-              details: "O YouTube bloqueou o download ou o vídeo está indisponível",
-              possible_causes: [
-                "Cookies do YouTube expiraram",
-                "YouTube detectou acesso automatizado",
-                "Vídeo com restrições de região",
-                "Formato de vídeo não disponível",
-              ],
-              suggestions: [
-                "Aguarde alguns minutos e tente novamente",
-                "Tente outro vídeo do YouTube",
-                "Verifique se o vídeo está disponível publicamente",
-              ],
-            })
-          } else if (isNonCriticalError(downloadStderr)) {
-            console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
+      while (!downloadSuccess && downloadAttempt < maxAttempts) {
+        downloadAttempt++
+        console.log(`🔄 Tentativa de download ${downloadAttempt}/${maxAttempts}...`)
+
+        try {
+          const result = await executeSecureCommand(ytDlpPath, downloadArgs, {
+            timeout: 300000, // 5 minutos para download
+          })
+          downloadStderr = result.stderr || ""
+          
+          // Verificar se houve erro de formato não disponível
+          if (downloadStderr.includes("Requested format is not available") || 
+              downloadStderr.includes("Only images are available")) {
+            console.log("⚠️ Formato não disponível, tentando formato simples...")
+            
+            // Usar formato ultra simples como fallback
+            const ultraSimpleFormat = format === "mp3" ? "ba/b" : "b"
+            downloadArgs = [
+              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+              "-f",
+              ultraSimpleFormat,
+              ...(format === "mp3" ? ["-x", "--audio-format", "mp3"] : ["--merge-output-format", "mp4"]),
+              "-o",
+              outputPath,
+              url,
+            ]
+            continue // Tentar novamente com formato simples
+          }
+          
+          downloadSuccess = true
+        } catch (downloadError) {
+          downloadStderr = downloadError.stderr || downloadError.message || ""
+          
+          // Se erro de formato, tentar formato simples
+          if (downloadStderr.includes("Requested format is not available") || 
+              downloadStderr.includes("Only images are available")) {
+            console.log("⚠️ Erro de formato detectado, usando fallback...")
+            const ultraSimpleFormat = format === "mp3" ? "ba/b" : "b"
+            downloadArgs = [
+              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
+              "-f",
+              ultraSimpleFormat,
+              ...(format === "mp3" ? ["-x", "--audio-format", "mp3"] : ["--merge-output-format", "mp4"]),
+              "-o",
+              outputPath,
+              url,
+            ]
+            continue
+          }
+          
+          // Se não for erro de formato, propagar o erro
+          if (downloadAttempt >= maxAttempts) {
+            throw downloadError
           }
         }
+      }
+
+      if (downloadStderr) {
+        if (isYouTubeCriticalError(downloadStderr)) {
+          console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
+          return res.status(500).json({
+            error: "YouTube: Não foi possível baixar este vídeo",
+            type: "youtube_critical_error",
+            details: "O YouTube bloqueou o download ou o vídeo está indisponível",
+            possible_causes: [
+              "Cookies do YouTube expiraram",
+              "YouTube detectou acesso automatizado",
+              "Vídeo com restrições de região",
+              "Formato de vídeo não disponível",
+            ],
+            suggestions: [
+              "Aguarde alguns minutos e tente novamente",
+              "Tente outro vídeo do YouTube",
+              "Verifique se o vídeo está disponível publicamente",
+            ],
+          })
+        } else if (isNonCriticalError(downloadStderr)) {
+          console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
+        }
+      }
 
         let finalFilePath = outputPath
         if (!fs.existsSync(finalFilePath)) {
@@ -2792,7 +2872,7 @@ memoryCleanupInterval = setInterval(() => {
   logMemoryUsage()
 }, MEMORY_CLEANUP_INTERVAL)
 
-// Remover a lógica de sleep mode baseada em `lastActivity`
+// Remover a lógica de sleep mode baseada em lastActivity
 // O servidor agora roda continuamente com limpeza periódica.
 
 app.listen(PORT, async () => {
@@ -2948,5 +3028,3 @@ process.on("SIGINT", () => {
   ultraAggressiveMemoryCleanup()
   process.exit(0)
 })
-
-
