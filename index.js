@@ -1278,33 +1278,42 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO CORRIGIDO COM 144P
+// 🎯 SELETOR DE FORMATO CORRIGIDO - COM FALLBACKS ROBUSTOS
 function getFormatSelector(format, quality, platform) {
   if (format === "mp3") {
-    // Formato simples e compatível para áudio
-    return "bestaudio/best"
+    // Formato simples e compativel para audio - com fallback
+    return "bestaudio[ext=m4a]/bestaudio/best"
   }
 
   const q = Number.parseInt(quality)
 
   // TikTok e Instagram: formato simples sem merge
   if (platform === "tiktok" || platform === "instagram") {
-    if (q >= 720) return "best[height<=1080]/best"
-    if (q >= 480) return "best[height<=720]/best"
-    if (q >= 360) return "best[height<=480]/best"
-    if (q >= 240) return "best[height<=360]/best"
-    return "best[height<=240]/best"
+    if (q >= 720) return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
+    if (q >= 480) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+    if (q >= 360) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
+    if (q >= 240) return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
+    return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best"
   }
 
-  // YouTube e outras: formato simplificado sem merge complexo
-  if (q >= 720) return "best[height<=1080]/best"
-  if (q >= 480) return "best[height<=720]/best"
-  if (q >= 360) return "best[height<=480]/best"
-  if (q >= 240) return "best[height<=360]/best"
-  return "best[height<=240]/best"
+  // YouTube e outras: formato com MULTIPLOS FALLBACKS para evitar "format not available"
+  // Quando o YouTube bloqueia formatos especificos, usa fallback automatico
+  if (q >= 720) return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+  if (q >= 480) return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+  if (q >= 360) return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+  if (q >= 240) return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+  return "bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio/best[height<=240]/best"
 }
 
-// 🔧 COMANDO SEGURO CORRIGIDO - SEM IMPERSONATION E LEGENDAS OPCIONAIS
+// 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
+function getSimpleFormatSelector(format) {
+  if (format === "mp3") {
+    return "bestaudio/best"
+  }
+  return "best"
+}
+
+// 🔧 COMANDO SEGURO CORRIGIDO - REMOVIDO --no-call-home (DEPRECATED)
 function buildSecureCommand(userAgent, cookieFile, platform) {
   const baseArgs = [
     "--user-agent",
@@ -1317,10 +1326,12 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "3",
     "--retry-sleep",
     "2",
-    "--no-call-home",
+    // REMOVIDO: "--no-call-home" - Esta opcao foi deprecated no yt-dlp
     "--geo-bypass",
     "--socket-timeout",
     "30",
+    "--no-warnings",
+    "--ignore-errors",
   ]
 
   if (platform === "tiktok") {
@@ -1333,6 +1344,15 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
 
   if (platform === "twitter") {
     baseArgs.push("--sleep-interval", "1")
+  }
+
+  // YouTube: Adicionar opcoes para resolver problemas de signature e formato
+  if (platform === "youtube") {
+    baseArgs.push(
+      "--extractor-args",
+      "youtube:player_client=web,mweb,android",
+      "--no-abort-on-error"
+    )
   }
 
   if (cookieFile) {
@@ -1393,6 +1413,12 @@ function isNonCriticalError(errorMessage) {
     "HTTP Error 429",
     "Too Many Requests",
     "WARNING:",
+    "Signature solving failed",
+    "Deprecated Feature",
+    "deprecated",
+    "n challenge solving failed",
+    "Requested format is not available",
+    "Only images are available",
   ]
 
   return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
