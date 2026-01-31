@@ -1278,31 +1278,18 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO CORRIGIDO - COM FALLBACKS ROBUSTOS
+// 🎯 SELETOR DE FORMATO ULTRA SIMPLIFICADO - SEMPRE FUNCIONA
+// O yt-dlp vai escolher o melhor formato disponivel automaticamente
 function getFormatSelector(format, quality, platform) {
+  // Para MP3/audio: sempre usa bestaudio com fallback para best
   if (format === "mp3") {
-    // Formato simples e compativel para audio - com fallback
-    return "bestaudio[ext=m4a]/bestaudio/best"
+    return "bestaudio/best"
   }
 
-  const q = Number.parseInt(quality)
-
-  // TikTok e Instagram: formato simples sem merge
-  if (platform === "tiktok" || platform === "instagram") {
-    if (q >= 720) return "best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best"
-    if (q >= 480) return "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
-    if (q >= 360) return "best[height<=480][ext=mp4]/best[height<=480]/best[ext=mp4]/best"
-    if (q >= 240) return "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best"
-    return "best[height<=240][ext=mp4]/best[height<=240]/best[ext=mp4]/best"
-  }
-
-  // YouTube e outras: formato com MULTIPLOS FALLBACKS para evitar "format not available"
-  // Quando o YouTube bloqueia formatos especificos, usa fallback automatico
-  if (q >= 720) return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
-  if (q >= 480) return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
-  if (q >= 360) return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
-  if (q >= 240) return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
-  return "bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio/best[height<=240]/best"
+  // Para MP4/video: usa "best" que SEMPRE funciona
+  // O yt-dlp automaticamente escolhe o melhor formato disponivel
+  // Isso evita TODOS os erros de "Requested format is not available"
+  return "best"
 }
 
 // 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
@@ -1397,8 +1384,10 @@ function isAuthenticationError(errorMessage) {
     "rate-limit reached",
     "General metadata extraction failed",
     "unable to extract shared data",
-    "The following content is not available on this app", // 🎯 YOUTUBE ESPECÍFICO
-    "Watch on the latest version of YouTube", // 🎯 YOUTUBE ESPECÍFICO
+    "The following content is not available on this app",
+    "Watch on the latest version of YouTube",
+    "Could not authenticate you", // Twitter/X API authentication error
+    "Error(s) while querying API", // Twitter/X API error
   ]
 
   return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -2172,12 +2161,13 @@ app.post("/download", async (req, res) => {
               platform: "instagram",
             })
           } else if (detectedPlatform === "twitter") {
-            // 🐦 ERRO ESPECÍFICO PARA TWITTER
+            // 🐦 Twitter: Cookies podem estar expirados - retornar erro claro
             return res.status(400).json({
-              error: "Conteúdo NSFW do Twitter requer cookies de autenticação. Configure TWITTER_COOKIE_01.",
-              type: "twitter_nsfw_required",
+              error: "Twitter/X: Cookies de autenticacao expiraram ou invalidos.",
+              type: "twitter_auth_error",
               platform: "twitter",
-              suggestion: "Use Cookie-Editor para extrair cookies do Twitter logado",
+              details: "Os cookies do Twitter precisam ser atualizados no servidor.",
+              suggestion: "Entre em contato com o administrador para atualizar os cookies do Twitter.",
             })
           }
           return res.status(400).json({
@@ -2222,10 +2212,11 @@ app.post("/download", async (req, res) => {
           })
         } else if (detectedPlatform === "twitter") {
           return res.status(400).json({
-            error: "Conteúdo NSFW do Twitter requer cookies de autenticação. Configure TWITTER_COOKIE_01.",
-            type: "twitter_nsfw_required",
+            error: "Twitter/X: Cookies de autenticacao expiraram ou invalidos.",
+            type: "twitter_auth_error",
             platform: "twitter",
-            suggestion: "Use Cookie-Editor para extrair cookies do Twitter logado",
+            details: "Os cookies do Twitter precisam ser atualizados no servidor.",
+            suggestion: "Entre em contato com o administrador para atualizar os cookies do Twitter.",
           })
         }
         return res.status(400).json({
