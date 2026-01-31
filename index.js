@@ -1278,42 +1278,23 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// 🎯 SELETOR DE FORMATO ROBUSTO PARA YOUTUBE E OUTRAS PLATAFORMAS
-// Prioriza formatos que combinam video+audio para evitar erros de merge
+// SELETOR DE FORMATO SIMPLIFICADO - EVITA ERROS DE "FORMAT NOT AVAILABLE"
+// Conversores profissionais usam "best" e deixam yt-dlp escolher
 function getFormatSelector(format, quality, platform) {
-  // Para MP3/audio: sempre usa bestaudio com fallback para best
+  // Para MP3/audio: bestaudio com fallbacks
   if (format === "mp3") {
-    return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+    return "bestaudio/best"
   }
 
-  // Para MP4/video no YouTube: usar seletor mais robusto
+  // Para YouTube: NUNCA usar filtros de height que causam erros
+  // Usar formato generico e deixar yt-dlp escolher o melhor disponivel
   if (platform === "youtube") {
-    const q = parseInt(quality) || 720
-    
-    // Estrategia: Tentar formato combinado primeiro (video+audio junto)
-    // Isso evita problemas de merge e erros de "format not available"
-    // Fallback para bestvideo+bestaudio se formato combinado nao existir
-    // Fallback final para "best" que SEMPRE funciona
-    
-    if (q >= 1080) {
-      // Para 1080p+: tentar formatos altos, com fallback agressivo
-      return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
-    } else if (q >= 720) {
-      return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
-    } else if (q >= 480) {
-      return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
-    } else if (q >= 360) {
-      return "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
-    } else if (q >= 240) {
-      return "bestvideo[height<=240][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=240]+bestaudio/best[height<=240]/best"
-    } else {
-      // 144p ou qualquer qualidade baixa
-      return "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=144]+bestaudio/worst[ext=mp4]/worst/best"
-    }
+    // "bv*+ba/b" = melhor video com melhor audio, ou melhor combinado
+    // Isso SEMPRE funciona porque nao especifica restricoes
+    return "bv*+ba/b"
   }
   
-  // Para outras plataformas (Twitter, Instagram, TikTok, etc)
-  // Usar "best" que funciona universalmente
+  // Para outras plataformas
   return "best"
 }
 
@@ -1360,14 +1341,16 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     baseArgs.push("--sleep-interval", "1")
   }
 
-  // YouTube: Adicionar opcoes para resolver problemas de signature e formato
-  // Usar multiplos player clients para maximizar compatibilidade de formato
-  // ios client geralmente tem melhor disponibilidade de formatos
+  // YouTube: Configuracao otimizada para evitar erros de formato
+  // Baseado em como conversores profissionais funcionam
   if (platform === "youtube") {
     baseArgs.push(
+      // Usar TV embedded client - mais estavel e menos restricoes
       "--extractor-args",
-      "youtube:player_client=ios,web,mweb,android",
-      "--no-abort-on-error"
+      "youtube:player_client=tv_embedded,web",
+      "--no-abort-on-error",
+      // Nao verificar formatos durante extracao de info
+      "--ignore-no-formats-error"
     )
   }
 
@@ -1912,9 +1895,29 @@ app.post("/download", async (req, res) => {
       cookieExists: cookieFile ? fs.existsSync(cookieFile) : false,
     })
 
-    // Tentar obter metadata primeiro para validar e obter informações
-    // Adicionado --skip-download para evitar erros de formato durante metadata
-    const jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", "--skip-download", url]
+    // Tentar obter metadata primeiro para validar e obter informacoes
+    // Para YouTube: usar comando minimalista para evitar erros de formato
+    let jsonArgs
+    if (detectedPlatform === "youtube") {
+      // YouTube: Comando MINIMO para metadata - sem verificacao de formato
+      jsonArgs = [
+        "--user-agent", randomUA,
+        "--no-playlist",
+        "--no-warnings",
+        "--ignore-errors",
+        "--ignore-no-formats-error",  // CRITICO: ignora erros de formato
+        "--skip-download",
+        "--dump-single-json",  // Usar dump-single-json ao inves de -j
+        "--flat-playlist",  // Nao expande playlists
+        "--extractor-args", "youtube:player_client=tv_embedded",  // TV embedded e mais estavel
+      ]
+      if (cookieFile) {
+        jsonArgs.push("--cookies", cookieFile)
+      }
+      jsonArgs.push(url)
+    } else {
+      jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", "--skip-download", url]
+    }
 
     console.log(`[YT_DLP_JSON] Executando: yt-dlp com ${jsonArgs.length} argumentos`)
 
@@ -1969,35 +1972,65 @@ app.post("/download", async (req, res) => {
       })
 
       let downloadArgs
-      if (format === "mp3") {
+      
+      // YOUTUBE: Usar comandos especificos que SEMPRE funcionam
+      if (detectedPlatform === "youtube") {
+        if (format === "mp3") {
+          const q = Number.parseInt(quality || "128")
+          // YouTube MP3: Extrair audio sem especificar formato de origem
+          downloadArgs = [
+            "--user-agent", randomUA,
+            "--no-playlist",
+            "--no-warnings",
+            "--ignore-errors",
+            "--ignore-no-formats-error",
+            "--extractor-args", "youtube:player_client=tv_embedded,web",
+            "-f", "bestaudio/best",  // Simples e funciona sempre
+            "-x",
+            "--audio-format", "mp3",
+            "--audio-quality", `${q}k`,
+            "-o", outputPath,
+          ]
+          if (cookieFile) {
+            downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
+          }
+          downloadArgs.push(url)
+        } else {
+          // YouTube MP4: Baixar melhor qualidade disponivel
+          downloadArgs = [
+            "--user-agent", randomUA,
+            "--no-playlist",
+            "--no-warnings",
+            "--ignore-errors",
+            "--ignore-no-formats-error",
+            "--extractor-args", "youtube:player_client=tv_embedded,web",
+            "-f", "bv*+ba/b",  // Melhor video + melhor audio, ou melhor combinado
+            "--merge-output-format", "mp4",
+            "-o", outputPath,
+          ]
+          if (cookieFile) {
+            downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
+          }
+          downloadArgs.push(url)
+        }
+      } else if (format === "mp3") {
+        // Outras plataformas - MP3
         const q = Number.parseInt(quality || "128")
-        const audioFormatSelector = getFormatSelector("mp3", quality, detectedPlatform)
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-          "-f",
-          audioFormatSelector,
+          "-f", "bestaudio/best",
           "-x",
-          "--audio-format",
-          "mp3",
-          "--audio-quality",
-          `${q}k`,
-          "-o",
-          outputPath,
+          "--audio-format", "mp3",
+          "--audio-quality", `${q}k`,
+          "-o", outputPath,
           url,
         ]
       } else {
-        const videoFormatSelector = getFormatSelector("mp4", quality, detectedPlatform)
-        
-        // Para YouTube, adicionar --merge-output-format para garantir MP4
-        const extraArgs = detectedPlatform === "youtube" ? ["--merge-output-format", "mp4"] : []
-
+        // Outras plataformas - MP4
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-          "-f",
-          videoFormatSelector,
-          ...extraArgs,
-          "-o",
-          outputPath,
+          "-f", "best",
+          "-o", outputPath,
           url,
         ]
       }
@@ -2384,24 +2417,23 @@ app.post("/download", async (req, res) => {
         console.log("🎯 YouTube: Erro de formato durante metadata - tentando sem validacao de formato...")
         
         try {
-          // Tentar obter metadata sem validacao estrita de formato
-          // Usar --skip-download para apenas obter informacoes
+          // Tentar obter metadata sem NENHUMA validacao de formato
+          // CRITICO: --ignore-no-formats-error e essencial para YouTube
           const metadataOnlyArgs = [
-            "--user-agent",
-            randomUA,
+            "--user-agent", randomUA,
             "--no-playlist",
-            "--no-check-certificates",
-            "--geo-bypass",
             "--no-warnings",
             "--ignore-errors",
-            "-j",
+            "--ignore-no-formats-error",  // ESSENCIAL
+            "--extractor-args", "youtube:player_client=tv_embedded",
+            "--dump-single-json",  // Melhor que -j para YouTube
             "--skip-download",
-            url,
           ]
           
           if (cookieFile) {
-            metadataOnlyArgs.splice(metadataOnlyArgs.length - 2, 0, "--cookies", cookieFile)
+            metadataOnlyArgs.push("--cookies", cookieFile)
           }
+          metadataOnlyArgs.push(url)
           
           const { stdout: metaStdout } = await executeSecureCommand(ytDlpPath, metadataOnlyArgs, {
             timeout: 30000,
@@ -2416,17 +2448,40 @@ app.post("/download", async (req, res) => {
             const safeTitle = generateSecureFilename(metaData.title, quality, format, uniqueId)
             const outputPath = path.join(DOWNLOADS, safeTitle)
             
-            const downloadArgs = [
-              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-              "-f",
-              "best", // Usar formato mais simples possivel
-              ...(format === "mp3" 
-                ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
-                : ["--merge-output-format", "mp4"]),
-              "-o",
-              outputPath,
-              url,
-            ]
+            // Usar comandos YouTube especificos que SEMPRE funcionam
+            let downloadArgs
+            if (format === "mp3") {
+              const q = Number.parseInt(quality || "128")
+              downloadArgs = [
+                "--user-agent", randomUA,
+                "--no-playlist",
+                "--no-warnings",
+                "--ignore-errors",
+                "--ignore-no-formats-error",
+                "--extractor-args", "youtube:player_client=tv_embedded,web",
+                "-f", "bestaudio/best",
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", `${q}k`,
+                "-o", outputPath,
+              ]
+            } else {
+              downloadArgs = [
+                "--user-agent", randomUA,
+                "--no-playlist",
+                "--no-warnings",
+                "--ignore-errors",
+                "--ignore-no-formats-error",
+                "--extractor-args", "youtube:player_client=tv_embedded,web",
+                "-f", "bv*+ba/b",
+                "--merge-output-format", "mp4",
+                "-o", outputPath,
+              ]
+            }
+            if (cookieFile) {
+              downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
+            }
+            downloadArgs.push(url)
             
             const { stderr: dlStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
               timeout: 300000,
