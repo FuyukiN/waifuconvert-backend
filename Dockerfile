@@ -1,45 +1,27 @@
-FROM node:20-bookworm-slim
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# Instalar dependências do sistema
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    ffmpeg \
-    curl \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+# dependencies
+/node_modules
 
-# Criar e ativar ambiente virtual Python
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# next.js
+/.next/
+/out/
 
-# Atualizar pip no ambiente virtual
-RUN pip install --upgrade pip
+# production
+/build
 
-# Instalar yt-dlp no ambiente virtual
-RUN pip install -U yt-dlp
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Verificar instalação
-RUN yt-dlp --version
+# env files
+.env*
 
-# Criar diretório da aplicação
-WORKDIR /app
+# vercel
+.vercel
 
-# Copiar package.json
-COPY package*.json ./
-
-# Instalar dependências Node.js
-RUN npm install --production
-
-# Copiar código da aplicação
-COPY . .
-
-# Criar diretórios necessários
-RUN mkdir -p downloads temp
-
-# Expor porta
-EXPOSE 8080
-
-# Comando para iniciar
-CMD ["npm", "start"]
+# typescript
+*.tsbuildinfo
+next-env.d.ts
