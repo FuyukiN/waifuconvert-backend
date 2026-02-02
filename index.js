@@ -1347,7 +1347,7 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     baseArgs.push(
       // Usar TV embedded client - mais estavel e menos restricoes
       "--extractor-args",
-      "youtube:player_client=tv_embedded,web",
+      "youtube:player_client=web,default",
       "--no-abort-on-error",
       // Nao verificar formatos durante extracao de info
       "--ignore-no-formats-error"
@@ -1909,7 +1909,7 @@ app.post("/download", async (req, res) => {
         "--skip-download",
         "--dump-single-json",  // Usar dump-single-json ao inves de -j
         "--flat-playlist",  // Nao expande playlists
-        "--extractor-args", "youtube:player_client=tv_embedded",  // TV embedded e mais estavel
+        "--extractor-args", "youtube:player_client=web,default",  // TV embedded e mais estavel
       ]
       if (cookieFile) {
         jsonArgs.push("--cookies", cookieFile)
@@ -1984,7 +1984,7 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
+            "--extractor-args", "youtube:player_client=web,default",
             "-f", "bestaudio/best",  // Simples e funciona sempre
             "-x",
             "--audio-format", "mp3",
@@ -2003,7 +2003,7 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
+            "--extractor-args", "youtube:player_client=web,default",
             "-f", "bv*+ba/b",  // Melhor video + melhor audio, ou melhor combinado
             "--merge-output-format", "mp4",
             "-o", outputPath,
@@ -2425,7 +2425,7 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",  // ESSENCIAL
-            "--extractor-args", "youtube:player_client=tv_embedded",
+            "--extractor-args", "youtube:player_client=web,default",
             "--dump-single-json",  // Melhor que -j para YouTube
             "--skip-download",
           ]
@@ -2458,7 +2458,7 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
+                "--extractor-args", "youtube:player_client=web,default",
                 "-f", "bestaudio/best",
                 "-x",
                 "--audio-format", "mp3",
@@ -2472,7 +2472,7 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
+                "--extractor-args", "youtube:player_client=web,default",
                 "-f", "bv*+ba/b",
                 "--merge-output-format", "mp4",
                 "-o", outputPath,
@@ -3256,3 +3256,4 @@ process.on("SIGINT", () => {
   ultraAggressiveMemoryCleanup()
   process.exit(0)
 })
+
