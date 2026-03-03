@@ -17,8 +17,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Atualizar pip no ambiente virtual
 RUN pip install --upgrade pip
 
-# Instalar yt-dlp no ambiente virtual
-RUN pip install -U yt-dlp
+# Instalar yt-dlp COM suporte a JavaScript runtime (yt-dlp-ejs incluso)
+RUN pip install -U "yt-dlp[default]"
 
 # Verificar instalação
 RUN yt-dlp --version
@@ -35,8 +35,8 @@ RUN npm install --production
 # Copiar código da aplicação
 COPY . .
 
-# Criar diretórios necessários
-RUN mkdir -p downloads temp
+# Criar diretorios necessarios
+RUN mkdir -p downloads temp cookies
 
 # Expor porta
 EXPOSE 8080
