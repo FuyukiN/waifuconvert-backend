@@ -1345,6 +1345,9 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
   // Baseado em como conversores profissionais funcionam
   if (platform === "youtube") {
     baseArgs.push(
+      // Runtime JS necessario para resolver challenges do YouTube (yt-dlp 2025.11.12+)
+      "--js-runtimes",
+      "node",
       // Usar TV embedded client - mais estavel e menos restricoes
       "--extractor-args",
       "youtube:player_client=tv_embedded,web",
