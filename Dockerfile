@@ -44,5 +44,5 @@ RUN mkdir -p downloads temp cookies
 # Expor porta
 EXPOSE 8080
 
-# Comando para iniciar
-CMD ["npm", "start"]
+# Comando para iniciar com GC exposto para limpeza de memoria
+CMD ["node", "--expose-gc", "--max-old-space-size=256", "index.js"]
