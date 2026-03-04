@@ -426,7 +426,7 @@ async function ensureYtDlpUpdated() {
     console.log("🔄 Verificando/atualizando yt-dlp...")
 
     // Tentar atualizar yt-dlp
-    await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp"], { timeout: 60000 })
+    await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp[default]"], { timeout: 60000 })
     console.log("✅ yt-dlp atualizado com sucesso")
 
     // Verificar versão
@@ -446,6 +446,8 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent",
       userAgent,
+      "--js-runtimes",
+      "node",
       "--referer",
       "https://www.youtube.com/",
       "--add-header",
@@ -479,6 +481,8 @@ class YouTubeBypassStrategies {
     return [
       "--user-agent",
       userAgent,
+      "--js-runtimes",
+      "node",
       "--referer",
       "https://www.youtube.com/",
       "--add-header",
@@ -507,6 +511,8 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent",
       userAgent,
+      "--js-runtimes",
+      "node",
       "--referer",
       "https://www.youtube.com/",
       "--add-header",
@@ -1536,7 +1542,7 @@ class YouTubeEmptyFileHandler {
 async function getVideoInfoWithoutJson(url, userAgent, cookieFile, platform) {
   console.log(`[INFO_FALLBACK] Tentando extração sem JSON`)
 
-  const args = ["--user-agent", userAgent, "--no-playlist", "--get-title", "--get-duration"]
+  const args = ["--user-agent", userAgent, "--js-runtimes", "node", "--no-playlist", "--get-title", "--get-duration"]
 
   if (cookieFile && fs.existsSync(cookieFile)) {
     args.push("--cookies", cookieFile)
@@ -1905,6 +1911,7 @@ app.post("/download", async (req, res) => {
       // YouTube: Comando MINIMO para metadata - sem verificacao de formato
       jsonArgs = [
         "--user-agent", randomUA,
+        "--js-runtimes", "node",
         "--no-playlist",
         "--no-warnings",
         "--ignore-errors",
@@ -2424,6 +2431,7 @@ app.post("/download", async (req, res) => {
           // CRITICO: --ignore-no-formats-error e essencial para YouTube
           const metadataOnlyArgs = [
             "--user-agent", randomUA,
+            "--js-runtimes", "node",
             "--no-playlist",
             "--no-warnings",
             "--ignore-errors",
@@ -2457,6 +2465,7 @@ app.post("/download", async (req, res) => {
               const q = Number.parseInt(quality || "128")
               downloadArgs = [
                 "--user-agent", randomUA,
+                "--js-runtimes", "node",
                 "--no-playlist",
                 "--no-warnings",
                 "--ignore-errors",
@@ -2471,6 +2480,7 @@ app.post("/download", async (req, res) => {
             } else {
               downloadArgs = [
                 "--user-agent", randomUA,
+                "--js-runtimes", "node",
                 "--no-playlist",
                 "--no-warnings",
                 "--ignore-errors",
