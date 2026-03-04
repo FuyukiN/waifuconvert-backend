@@ -1354,9 +1354,6 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
       // Runtime JS necessario para resolver challenges do YouTube (yt-dlp 2025.11.12+)
       "--js-runtimes",
       "node",
-      // Usar TV embedded client - mais estavel e menos restricoes
-      "--extractor-args",
-      "youtube:player_client=tv_embedded,web",
       "--no-abort-on-error",
       // Nao verificar formatos durante extracao de info
       "--ignore-no-formats-error"
@@ -1423,12 +1420,8 @@ function isNonCriticalError(errorMessage) {
     "HTTP Error 429",
     "Too Many Requests",
     "WARNING:",
-    "Signature solving failed",
     "Deprecated Feature",
     "deprecated",
-    "n challenge solving failed",
-    // REMOVIDO: "Requested format is not available" - Este e um erro critico que precisa de tratamento especial
-    "Only images are available",
   ]
 
   return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -1919,7 +1912,6 @@ app.post("/download", async (req, res) => {
         "--skip-download",
         "--dump-single-json",  // Usar dump-single-json ao inves de -j
         "--flat-playlist",  // Nao expande playlists
-        "--extractor-args", "youtube:player_client=tv_embedded",  // TV embedded e mais estavel
       ]
       if (cookieFile) {
         jsonArgs.push("--cookies", cookieFile)
@@ -1990,11 +1982,11 @@ app.post("/download", async (req, res) => {
           // YouTube MP3: Extrair audio sem especificar formato de origem
           downloadArgs = [
             "--user-agent", randomUA,
+            "--js-runtimes", "node",
             "--no-playlist",
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
             "-f", "bestaudio/best",  // Simples e funciona sempre
             "-x",
             "--audio-format", "mp3",
@@ -2009,11 +2001,11 @@ app.post("/download", async (req, res) => {
           // YouTube MP4: Baixar melhor qualidade disponivel
           downloadArgs = [
             "--user-agent", randomUA,
+            "--js-runtimes", "node",
             "--no-playlist",
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
             "-f", "bv*+ba/b",  // Melhor video + melhor audio, ou melhor combinado
             "--merge-output-format", "mp4",
             "-o", outputPath,
@@ -2436,7 +2428,6 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",  // ESSENCIAL
-            "--extractor-args", "youtube:player_client=tv_embedded",
             "--dump-single-json",  // Melhor que -j para YouTube
             "--skip-download",
           ]
@@ -2470,7 +2461,6 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
                 "-f", "bestaudio/best",
                 "-x",
                 "--audio-format", "mp3",
@@ -2485,7 +2475,6 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
                 "-f", "bv*+ba/b",
                 "--merge-output-format", "mp4",
                 "-o", outputPath,
