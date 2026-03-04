@@ -20,6 +20,9 @@ RUN pip install --upgrade pip
 # Instalar yt-dlp COM suporte a JavaScript runtime (yt-dlp-ejs incluso)
 RUN pip install -U "yt-dlp[default]"
 
+# Instalar yt-dlp-ejs explicitamente e verificar
+RUN pip install --no-cache-dir -U yt-dlp-ejs && python3 -c "import yt_dlp_ejs; print('yt-dlp-ejs OK')"
+
 # Verificar instalação
 RUN yt-dlp --version
 
