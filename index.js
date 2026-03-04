@@ -887,9 +887,9 @@ app.use("/download", downloadLimiter)
 
 // 🧠 MIDDLEWARE PARA RASTREAR ATIVIDADE (SEM SLEEP MODE)
 app.use((req, res, next) => {
-  resourceEconomizer.updateActivity() // Atualizar atividade para o economizador de recursos
-  lastActivity = Date.now() // Não relevante para o modo sleep, mas mantido para logs
-  console.log(`🌐 Request: ${req.method} ${req.path} - Activity updated`)
+  resourceEconomizer.updateActivity()
+  lastActivity = Date.now()
+  console.log(`🌐 Request: ${req.method} ${req.path} from ${req.headers.origin || 'unknown'} - Activity updated`)
   next()
 })
 
@@ -1292,12 +1292,9 @@ function getFormatSelector(format, quality, platform) {
     return "bestaudio/best"
   }
 
-  // Para YouTube: NUNCA usar filtros de height que causam erros
-  // Usar formato generico e deixar yt-dlp escolher o melhor disponivel
+  // Para YouTube: Forcar H.264 (avc1) para compatibilidade, com fallback
   if (platform === "youtube") {
-    // "bv*+ba/b" = melhor video com melhor audio, ou melhor combinado
-    // Isso SEMPRE funciona porque nao especifica restricoes
-    return "bv*+ba/b"
+    return "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best"
   }
   
   // Para outras plataformas
@@ -1354,9 +1351,6 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
       // Runtime JS necessario para resolver challenges do YouTube (yt-dlp 2025.11.12+)
       "--js-runtimes",
       "node",
-      // Usar TV embedded client - mais estavel e menos restricoes
-      "--extractor-args",
-      "youtube:player_client=tv_embedded,web",
       "--no-abort-on-error",
       // Nao verificar formatos durante extracao de info
       "--ignore-no-formats-error"
@@ -1374,14 +1368,14 @@ function isYouTubeCriticalError(errorMessage) {
   const criticalErrors = [
     "Did not get any data blocks",
     "ERROR: Did not get any data blocks",
-    "unable to download video data", // Adicionado
-    "no video formats found", // Adicionado
+    "unable to download video data",
     "This video is unavailable",
     "Video unavailable",
     "This video has been removed",
     "This video is private",
   ]
-
+  // REMOVIDO "no video formats found" - este erro e tratado pelo --ignore-no-formats-error
+  // e pelo sistema de fallback de formato
   return criticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
 }
 
@@ -1423,12 +1417,8 @@ function isNonCriticalError(errorMessage) {
     "HTTP Error 429",
     "Too Many Requests",
     "WARNING:",
-    "Signature solving failed",
     "Deprecated Feature",
     "deprecated",
-    "n challenge solving failed",
-    // REMOVIDO: "Requested format is not available" - Este e um erro critico que precisa de tratamento especial
-    "Only images are available",
   ]
 
   return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
@@ -1830,7 +1820,15 @@ function cleanupOldFiles() {
   }
 }
 
-app.use(express.json({ limit: "10mb" }))
+app.use((req, res, next) => {
+  express.json({ limit: "10mb" })(req, res, (err) => {
+    if (err) {
+      console.error("❌ [JSON PARSE ERROR]:", err.message)
+      return res.status(400).json({ error: "JSON invalido no body da requisicao" })
+    }
+    next()
+  })
+})
 
 if (!fs.existsSync(DOWNLOADS)) {
   fs.mkdirSync(DOWNLOADS, { recursive: true, mode: 0o755 })
@@ -1847,16 +1845,11 @@ app.post("/download", async (req, res) => {
 
   try {
     console.log(`🌐 POST /download - CORS OK`)
+    console.log(`[DEBUG] Body recebido:`, JSON.stringify(req.body || {}).substring(0, 200))
 
-    // Checar o modo de economia de recursos
-    resourceEconomizer.checkEconomyMode()
-    if (resourceEconomizer.isEconomyMode) {
-      return res.status(503).json({
-        error: "Servidor em modo de economia de recursos. Tente novamente mais tarde.",
-        type: "economy_mode_active",
-        details: `Servidor inativo há ${Math.floor((Date.now() - resourceEconomizer.lastRequest) / 60000)} minutos.`,
-      })
-    }
+    // REMOVIDO: economy mode bloqueava requisicoes apos 10 min de inatividade
+    // Isso causava o backend "morrer" silenciosamente para o usuario
+    resourceEconomizer.updateActivity()
 
     if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
       return res.status(429).json({
@@ -1919,7 +1912,6 @@ app.post("/download", async (req, res) => {
         "--skip-download",
         "--dump-single-json",  // Usar dump-single-json ao inves de -j
         "--flat-playlist",  // Nao expande playlists
-        "--extractor-args", "youtube:player_client=tv_embedded",  // TV embedded e mais estavel
       ]
       if (cookieFile) {
         jsonArgs.push("--cookies", cookieFile)
@@ -1990,11 +1982,11 @@ app.post("/download", async (req, res) => {
           // YouTube MP3: Extrair audio sem especificar formato de origem
           downloadArgs = [
             "--user-agent", randomUA,
+            "--js-runtimes", "node",
             "--no-playlist",
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
             "-f", "bestaudio/best",  // Simples e funciona sempre
             "-x",
             "--audio-format", "mp3",
@@ -2006,15 +1998,16 @@ app.post("/download", async (req, res) => {
           }
           downloadArgs.push(url)
         } else {
-          // YouTube MP4: Baixar melhor qualidade disponivel
+          // YouTube MP4: Forcar H.264 (avc1) para compatibilidade universal
+          // Fallback para qualquer formato se H.264 nao estiver disponivel
           downloadArgs = [
             "--user-agent", randomUA,
+            "--js-runtimes", "node",
             "--no-playlist",
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "--extractor-args", "youtube:player_client=tv_embedded,web",
-            "-f", "bv*+ba/b",  // Melhor video + melhor audio, ou melhor combinado
+            "-f", "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best",
             "--merge-output-format", "mp4",
             "-o", outputPath,
           ]
@@ -2418,7 +2411,8 @@ app.post("/download", async (req, res) => {
         }
       }
     } catch (error) {
-      console.error("❌ Erro no metadata:", error.message)
+      console.error("❌ Erro no metadata:", error.message?.substring(0, 500))
+      console.error("❌ Platform:", detectedPlatform, "| URL:", url?.substring(0, 80))
 
       // 🎯 NOVO: Tratar erro de formato nao disponivel durante metadata
       // Este erro pode ocorrer quando o YouTube retorna um erro de formato
@@ -2436,7 +2430,6 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",  // ESSENCIAL
-            "--extractor-args", "youtube:player_client=tv_embedded",
             "--dump-single-json",  // Melhor que -j para YouTube
             "--skip-download",
           ]
@@ -2470,7 +2463,6 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
                 "-f", "bestaudio/best",
                 "-x",
                 "--audio-format", "mp3",
@@ -2485,8 +2477,7 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "--extractor-args", "youtube:player_client=tv_embedded,web",
-                "-f", "bv*+ba/b",
+                "-f", "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best",
                 "--merge-output-format", "mp4",
                 "-o", outputPath,
               ]
@@ -2600,7 +2591,8 @@ app.post("/download", async (req, res) => {
       }
     }
   } catch (error) {
-    console.error("❌ Erro inesperado:", error)
+    console.error("❌ Erro inesperado:", error?.message || error)
+    console.error("❌ Stack:", error?.stack?.substring(0, 300))
     res.status(500).json({ error: "Erro interno do servidor" })
   } finally {
     // 🔧 DECREMENTAR CONTADOR APENAS SE FOI INCREMENTADO
@@ -3092,8 +3084,15 @@ app.get("/", (req, res) => {
   })
 })
 
+// Rota de teste rapido para verificar se POST funciona
+app.post("/test-post", (req, res) => {
+  console.log("[TEST-POST] Body:", JSON.stringify(req.body || {}).substring(0, 200))
+  res.json({ ok: true, body_received: !!req.body, timestamp: new Date().toISOString() })
+})
+
 app.use((error, req, res, next) => {
-  console.error("❌ Erro não tratado:", error.message)
+  console.error("❌ Erro nao tratado:", error.message, "| Path:", req.path, "| Method:", req.method)
+  console.error("❌ Stack:", error.stack?.substring(0, 300))
   res.status(500).json({
     error: "Erro interno do servidor",
     timestamp: new Date().toISOString(),
@@ -3239,14 +3238,21 @@ app.listen(PORT, async () => {
 })
 
 process.on("uncaughtException", (error) => {
-  console.error("❌ Erro não capturado:", error.message)
-  console.log("🧠 Limpeza de emergência antes de sair...")
-  ultraAggressiveMemoryCleanup()
-  process.exit(1)
+  console.error("❌ UNCAUGHT EXCEPTION:", error.message)
+  console.error("❌ Stack:", error.stack?.substring(0, 500))
+  // NAO fazer process.exit(1) - deixar o Railway reiniciar se necessario
+  // O process.exit(1) matava o servidor silenciosamente!
+  try {
+    ultraAggressiveMemoryCleanup()
+  } catch (e) {
+    // ignorar erros de limpeza
+  }
 })
 
 process.on("unhandledRejection", (reason, promise) => {
-  console.error("❌ Promise rejeitada:", reason)
+  console.error("❌ Promise rejeitada:", reason?.message || reason)
+  console.error("❌ Stack:", reason?.stack?.substring(0, 300))
+  // NAO fazer process.exit - deixar o servidor continuar rodando
 })
 
 // Limpeza de intervalos quando o processo é encerrado
