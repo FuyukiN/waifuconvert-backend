@@ -1292,30 +1292,43 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)]
 }
 
-// SELETOR DE FORMATO SIMPLIFICADO - EVITA ERROS DE "FORMAT NOT AVAILABLE"
-// Conversores profissionais usam "best" e deixam yt-dlp escolher
+// SELETOR DE FORMATO COM QUALIDADE RESPEITADA
 function getFormatSelector(format, quality, platform) {
-  // Para MP3/audio: bestaudio com fallbacks
   if (format === "mp3") {
     return "bestaudio/best"
   }
 
-  // Para YouTube: Forcar H.264 (avc1) para compatibilidade, com fallback
+  const h = Number.parseInt(quality)
+
   if (platform === "youtube") {
+    if (h && !isNaN(h)) {
+      return (
+        `bestvideo[vcodec^=avc1][height<=${h}]+bestaudio[acodec^=mp4a]` +
+        `/bestvideo[vcodec^=avc1][height<=${h}]+bestaudio` +
+        `/bestvideo[height<=${h}]+bestaudio` +
+        `/best[height<=${h}]` +
+        `/bestvideo+bestaudio/best`
+      )
+    }
     return "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best"
   }
-  
-  // Para outras plataformas
+
+  if (h && !isNaN(h)) {
+    return `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`
+  }
+
   return "best"
 }
 
 // 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
-// Usado quando todos os outros seletores falharem
-function getSimpleFormatSelector(format) {
+function getSimpleFormatSelector(format, quality) {
   if (format === "mp3") {
     return "bestaudio[ext=m4a]/bestaudio/best"
   }
-  // "best" SEMPRE funciona - escolhe o melhor formato combinado disponivel
+  const h = Number.parseInt(quality)
+  if (h && !isNaN(h)) {
+    return `best[height<=${h}]/best`
+  }
   return "best"
 }
 
@@ -1467,7 +1480,7 @@ class YouTubeEmptyFileHandler {
         // Nas tentativas seguintes, usar formato simplificado "best"
         const formatToUse = retryCount === 1 
           ? getFormatSelector(format, quality, platform)
-          : getSimpleFormatSelector(format)
+          : getSimpleFormatSelector(format, quality)
         
         console.log(`🎯 Usando formato: ${formatToUse}`)
         
@@ -1477,7 +1490,7 @@ class YouTubeEmptyFileHandler {
           "-f",
           formatToUse,
           ...(format === "mp3" 
-            ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`]
+            ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
             : ["--merge-output-format", "mp4"]),
           "--add-metadata",
           "-o",
@@ -1656,8 +1669,7 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
           "--extract-audio",
           "--audio-format",
           "mp3",
-          "--audio-quality",
-          `${q}k`,
+          "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
           "--add-metadata",
           "--embed-thumbnail",
           "-o",
@@ -1693,9 +1705,9 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
           const fallbackArgs = [
             ...baseArgs,
             "-f",
-            getSimpleFormatSelector(format),
+            getSimpleFormatSelector(format, quality),
             ...(format === "mp3" 
-              ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`]
+              ? ["--extract-audio", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
               : ["--merge-output-format", "mp4"]),
             "--add-metadata",
             "-o",
@@ -1996,10 +2008,11 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "-f", "bestaudio/best",  // Simples e funciona sempre
+            "-f", "bestaudio/best",
             "-x",
             "--audio-format", "mp3",
-            "--audio-quality", `${q}`,
+            // Usar postprocessor-args para forcar bitrate fixo via ffmpeg
+            "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
             "-o", outputPath,
           ]
           if (cookieFile) {
@@ -2007,8 +2020,8 @@ app.post("/download", async (req, res) => {
           }
           downloadArgs.push(url)
         } else {
-          // YouTube MP4: Forcar H.264 (avc1) para compatibilidade universal
-          // Fallback para qualquer formato se H.264 nao estiver disponivel
+          // YouTube MP4: Respeitar qualidade solicitada com H.264 e fallbacks progressivos
+          const videoFormatSelector = getFormatSelector(format, quality, "youtube")
           downloadArgs = [
             "--user-agent", randomUA,
             "--js-runtimes", "node",
@@ -2016,7 +2029,7 @@ app.post("/download", async (req, res) => {
             "--no-warnings",
             "--ignore-errors",
             "--ignore-no-formats-error",
-            "-f", "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best",
+            "-f", videoFormatSelector,
             "--merge-output-format", "mp4",
             "-o", outputPath,
           ]
@@ -2026,22 +2039,25 @@ app.post("/download", async (req, res) => {
           downloadArgs.push(url)
         }
       } else if (format === "mp3") {
-        // Outras plataformas - MP3
+        // Outras plataformas - MP3 com bitrate fixo via ffmpeg
         const q = Number.parseInt(quality || "128")
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
           "-f", "bestaudio/best",
           "-x",
           "--audio-format", "mp3",
-          "--audio-quality", `${q}`,
+          // Forcar bitrate fixo via ffmpeg (--audio-quality sozinho nao garante o bitrate)
+          "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
           "-o", outputPath,
           url,
         ]
       } else {
-        // Outras plataformas - MP4
+        // Outras plataformas - MP4 com qualidade solicitada
+        const videoFormatSelector = getFormatSelector(format, quality, detectedPlatform)
         downloadArgs = [
           ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-          "-f", "best",
+          "-f", videoFormatSelector,
+          "--merge-output-format", "mp4",
           "-o", outputPath,
           url,
         ]
@@ -2063,8 +2079,10 @@ app.post("/download", async (req, res) => {
             const fallbackArgs = [
               ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
               "-f",
-              getSimpleFormatSelector(format),
-              ...(format === "mp3" ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`] : ["--merge-output-format", "mp4"]),
+              getSimpleFormatSelector(format, quality),
+              ...(format === "mp3"
+                ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
+                : ["--merge-output-format", "mp4"]),
               "-o",
               outputPath,
               url,
@@ -2271,9 +2289,9 @@ app.post("/download", async (req, res) => {
             const fallbackArgs = [
               ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
               "-f",
-              getSimpleFormatSelector(format),
+              getSimpleFormatSelector(format, quality),
               ...(format === "mp3" 
-                ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+                ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
                 : ["--merge-output-format", "mp4"]),
               "-o",
               outputPath,
@@ -2475,10 +2493,11 @@ app.post("/download", async (req, res) => {
                 "-f", "bestaudio/best",
                 "-x",
                 "--audio-format", "mp3",
-                "--audio-quality", `${q}k`,
+                "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
                 "-o", outputPath,
               ]
             } else {
+              const videoFormatSelector = getFormatSelector("mp4", quality, "youtube")
               downloadArgs = [
                 "--user-agent", randomUA,
                 "--js-runtimes", "node",
@@ -2486,7 +2505,7 @@ app.post("/download", async (req, res) => {
                 "--no-warnings",
                 "--ignore-errors",
                 "--ignore-no-formats-error",
-                "-f", "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best",
+                "-f", videoFormatSelector,
                 "--merge-output-format", "mp4",
                 "-o", outputPath,
               ]
