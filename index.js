@@ -1041,7 +1041,15 @@ function executeSecureCommand(command, args, options = {}) {
     })
 
     child.on("close", (code) => {
+      // yt-dlp pode sair com código não-zero mesmo em sucesso parcial (ex: avisos, legendas falharam)
+      // Só rejeitar se código for não-zero E stderr contiver erro real E stdout vazio
       if (code === 0) {
+        resolve({ stdout, stderr })
+      } else if (code !== 0 && stdout.length > 0) {
+        // Houve saída - provavelmente sucesso com avisos
+        resolve({ stdout, stderr })
+      } else if (code !== 0 && stderr && !stderr.toLowerCase().includes("error")) {
+        // stderr só tem warnings, não erros reais
         resolve({ stdout, stderr })
       } else {
         reject(new Error(`Comando falhou com código ${code}: ${stderr}`))
@@ -1330,6 +1338,7 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
     "30",
     "--no-warnings",
     "--ignore-errors",
+    "--ignore-no-formats-error",  // CRITICO: evita erro "No video formats found"
   ]
 
   if (platform === "tiktok") {
@@ -1468,7 +1477,7 @@ class YouTubeEmptyFileHandler {
           "-f",
           formatToUse,
           ...(format === "mp3" 
-            ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+            ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`]
             : ["--merge-output-format", "mp4"]),
           "--add-metadata",
           "-o",
@@ -1686,7 +1695,7 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
             "-f",
             getSimpleFormatSelector(format),
             ...(format === "mp3" 
-              ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`]
+              ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`]
               : ["--merge-output-format", "mp4"]),
             "--add-metadata",
             "-o",
@@ -1990,7 +1999,7 @@ app.post("/download", async (req, res) => {
             "-f", "bestaudio/best",  // Simples e funciona sempre
             "-x",
             "--audio-format", "mp3",
-            "--audio-quality", `${q}k`,
+            "--audio-quality", `${q}`,
             "-o", outputPath,
           ]
           if (cookieFile) {
@@ -2024,7 +2033,7 @@ app.post("/download", async (req, res) => {
           "-f", "bestaudio/best",
           "-x",
           "--audio-format", "mp3",
-          "--audio-quality", `${q}k`,
+          "--audio-quality", `${q}`,
           "-o", outputPath,
           url,
         ]
@@ -2055,7 +2064,7 @@ app.post("/download", async (req, res) => {
               ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
               "-f",
               getSimpleFormatSelector(format),
-              ...(format === "mp3" ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}k`] : ["--merge-output-format", "mp4"]),
+              ...(format === "mp3" ? ["-x", "--audio-format", "mp3", "--audio-quality", `${Number.parseInt(quality || "128")}`] : ["--merge-output-format", "mp4"]),
               "-o",
               outputPath,
               url,
