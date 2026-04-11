@@ -1,6 +1,6 @@
 const express = require("express")
 const cors = require("cors")
-const { exec, spawn } = require("child_process")
+const { spawn } = require("child_process")
 const fs = require("fs")
 const path = require("path")
 const rateLimit = require("express-rate-limit")
@@ -10,407 +10,43 @@ const crypto = require("crypto")
 
 const app = express()
 
-// 🛡️ CONFIAR NO RAILWAY PROXY PARA RATE LIMITING
+// Trust Railway's reverse proxy for accurate rate limiting
 app.set("trust proxy", true)
 
-// 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
+// --- Constants ---
 const PORT = process.env.PORT || 8080
-const MAX_CONCURRENT_DOWNLOADS = 4 // REDUZIDO para economia
-const MAX_FILE_SIZE = 512 * 1024 * 1024 // 512MB (reduzido)
-const MAX_DURATION = 7200 // 🕐 2 HORAS PARA TUDO (MP3/MP4, qualquer qualidade)
-
-// 🧠 SISTEMA DE LIMPEZA AGRESSIVA DE MEMÓRIA - SEM SLEEP MODE
-let lastActivity = Date.now()
-let memoryCleanupInterval = null
-let fileCleanupInterval = null
-
-// Sistema de economia de recursos
-class ResourceEconomizer {
-  constructor() {
-    this.isEconomyMode = false
-    this.lastRequest = Date.now()
-    this.economyThreshold = 10 * 60 * 1000 // 10 minutos de inatividade
-  }
-
-  updateActivity() {
-    this.lastRequest = Date.now()
-    if (this.isEconomyMode) {
-      this.exitEconomyMode()
-    }
-  }
-
-  checkEconomyMode() {
-    const inactive = Date.now() - this.lastRequest
-    const inactiveMinutes = Math.floor(inactive / 60000)
-
-    if (inactive > this.economyThreshold && !this.isEconomyMode && activeDownloads === 0) {
-      this.enterEconomyMode(inactiveMinutes)
-    }
-  }
-
-  enterEconomyMode(inactiveMinutes) {
-    this.isEconomyMode = true
-    console.log(`🔥 MODO ECONOMIA ATIVADO - servidor inativo há ${inactiveMinutes}min`)
-    ultraAggressiveMemoryCleanup()
-  }
-
-  exitEconomyMode() {
-    if (!this.isEconomyMode) return
-    this.isEconomyMode = false
-    console.log(`🚀 MODO NORMAL ATIVADO - nova requisição detectada`)
-  }
-
-  getEconomyStatus() {
-    const inactive = Date.now() - this.lastRequest
-    const inactiveMinutes = Math.floor(inactive / 60000)
-    return {
-      economy_mode: this.isEconomyMode,
-      inactive_time_minutes: inactiveMinutes,
-    }
-  }
-}
-
-const resourceEconomizer = new ResourceEconomizer()
-
-// 🧠 FUNÇÃO PARA GARBAGE COLLECTION FORÇADO - RAILWAY COMPATIBLE
-function forceGarbageCollection() {
-  try {
-    // Método 1: Tentar global.gc() se disponível
-    if (typeof global.gc === "function") {
-      const before = process.memoryUsage().heapUsed
-      global.gc()
-      const after = process.memoryUsage().heapUsed
-      const freed = Math.round((before - after) / 1024 / 1024)
-      console.log(`🗑️ GC (Method 1): Liberados ${freed}MB de RAM`)
-      return freed
-    }
-
-    // Método 2: Forçar através de require('v8')
-    try {
-      const v8 = require("v8")
-      if (v8.getHeapStatistics) {
-        const before = process.memoryUsage().heapUsed
-
-        // Forçar coleta usando técnicas alternativas
-        if (global.gc) {
-          global.gc()
-        } else {
-          // Criar pressão de memória para forçar GC
-          const dummy = new Array(1000000).fill("x")
-          dummy.length = 0
-        }
-
-        const after = process.memoryUsage().heapUsed
-        const freed = Math.round((before - after) / 1024 / 1024)
-        console.log(`🗑️ GC (Method 2): Liberados ${freed}MB de RAM`)
-        return freed
-      }
-    } catch (v8Error) {
-      console.log("⚠️ V8 method failed:", v8Error.message)
-    }
-
-    // Método 3: Limpeza manual agressiva
-    console.log("🧹 GC não disponível - usando limpeza manual agressiva")
-
-    // Limpar variáveis globais
-    if (global.Buffer) {
-      global.Buffer.poolSize = 1
-    }
-
-    // Forçar limpeza de arrays grandes
-    const before = process.memoryUsage().heapUsed
-
-    // Criar e destruir objetos para forçar coleta
-    for (let i = 0; i < 100; i++) {
-      const temp = new Array(10000).fill(null)
-      temp.length = 0
-    }
-
-    const after = process.memoryUsage().heapUsed
-    const freed = Math.round((before - after) / 1024 / 1024)
-    console.log(`🧹 Manual cleanup: ${freed}MB liberados`)
-    return freed
-  } catch (error) {
-    console.log("❌ Erro na limpeza de memória:", error.message)
-    return 0
-  }
-}
-
-// 🧠 FUNÇÃO DE LIMPEZA ULTRA-AGRESSIVA (PARA DOWNLOADS)
-function ultraAggressiveMemoryCleanup() {
-  console.log("🧹 === LIMPEZA ULTRA-AGRESSIVA DE MEMÓRIA ===")
-  const before = process.memoryUsage()
-
-  try {
-    // 1. Tentar GC normal
-    forceGarbageCollection()
-
-    // 2. Limpar caches do Node.js (com cuidado)
-    if (require.cache) {
-      const cacheKeys = Object.keys(require.cache)
-      const essentialModules = [
-        "express",
-        "cors",
-        "helmet",
-        "validator",
-        "child_process",
-        "fs",
-        "path",
-        "rate-limit",
-        "crypto",
-        "v8", // Adicionado v8
-      ]
-      let clearedCount = 0
-      cacheKeys.forEach((key) => {
-        const isEssential = essentialModules.some((mod) => key.includes(mod))
-        // Evitar remover módulos essenciais ou do node_modules
-        if (!isEssential && !key.includes("node_modules") && key.startsWith(process.cwd())) {
-          try {
-            delete require.cache[key]
-            clearedCount++
-          } catch (e) {
-            // Ignorar erros de limpeza
-          }
-        }
-      })
-      console.log(`🗂️ Módulos do cache limpos: ${clearedCount}`)
-    }
-
-    // 3. Limpar pools de cookies temporariamente
-    const currentGooglePool = googleCookiePool.length
-    const currentInstagramPool = instagramCookiePool.length
-    const currentTwitterPool = twitterCookiePool.length
-    const currentGeneralPool = generalCookiePool.length
-
-    // Limpar pools para forçar recarga (se necessário) - pode ser perigoso se não gerenciado
-    // googleCookiePool = []; instagramCookiePool = []; twitterCookiePool = []; generalCookiePool = [];
-    // console.log(`🧹 Pools de cookies limpos temporariamente`)
-
-    // 4. Forçar coleta através de pressão de memória
-    const tempArrays = []
-    for (let i = 0; i < 100; i++) {
-      // Criar arrays menores e mais numerosos para tentar forçar GC
-      tempArrays.push(new Array(10000).fill(null))
-    }
-    tempArrays.length = 0 // Limpar o array que contém os arrays temporários
-
-    // 5. Limpeza de objetos globais (com cautela)
-    // Opcional: Remover ou limpar variáveis globais específicas se houver suspeita de vazamento
-
-    // 6. Limpar arquivos temporários mais antigos (se aplicável)
-    // cleanupOldFiles() // Já é chamado em outro lugar
-
-    const after = process.memoryUsage()
-    const totalFreed = Math.round((before.heapUsed - after.heapUsed) / 1024 / 1024)
-
-    console.log(`🎯 Limpeza ultra-agressiva completa: ${totalFreed}MB liberados`)
-    console.log(
-      `📊 Antes: ${Math.round(before.heapUsed / 1024 / 1024)}MB → Depois: ${Math.round(after.heapUsed / 1024 / 1024)}MB`,
-    )
-  } catch (error) {
-    console.log("❌ Erro na limpeza ultra-agressiva:", error.message)
-  }
-}
-
-// 🧠 MONITORAMENTO DE MEMÓRIA APRIMORADO
-function logMemoryUsage() {
-  const used = process.memoryUsage()
-  const mb = (bytes) => Math.round(bytes / 1024 / 1024)
-
-  console.log(`📊 RAM: ${mb(used.heapUsed)}MB heap / ${mb(used.rss)}MB total`)
-  console.log(`📊 External: ${mb(used.external)}MB / ArrayBuffers: ${mb(used.arrayBuffers)}MB`)
-
-  // Alerta se usar mais que 200MB
-  if (used.heapUsed > 200 * 1024 * 1024) {
-    console.log("🚨 Alto uso de RAM - forçando limpeza...")
-    ultraAggressiveMemoryCleanup() // Usar a versão ultra-agressiva
-  }
-
-  return {
-    heapUsed: mb(used.heapUsed),
-    rss: mb(used.rss),
-    external: mb(used.external),
-    arrayBuffers: mb(used.arrayBuffers),
-  }
-}
-
-// 🧠 VERIFICAR VARIÁVEIS DE OTIMIZAÇÃO NA INICIALIZAÇÃO - RAILWAY DEBUG
-function checkOptimizationVariables() {
-  console.log("🧠 === VERIFICAÇÃO DE OTIMIZAÇÃO DE MEMÓRIA (RAILWAY) ===")
-  console.log(`NODE_ENV: ${process.env.NODE_ENV || "❌ NÃO DEFINIDO"}`)
-  console.log(`NODE_OPTIONS: ${process.env.NODE_OPTIONS || "❌ NÃO DEFINIDO"}`)
-  console.log(`MAX_OLD_SPACE_SIZE: ${process.env.MAX_OLD_SPACE_SIZE || "❌ NÃO DEFINIDO"}MB`)
-
-  // Verificações múltiplas para GC
-  const gcMethods = []
-
-  if (typeof global.gc === "function") {
-    gcMethods.push("✅ global.gc() disponível")
-  } else {
-    gcMethods.push("❌ global.gc() não disponível")
-  }
-
-  try {
-    const v8 = require("v8")
-    if (v8.getHeapStatistics) {
-      gcMethods.push("✅ V8 heap statistics disponível")
-    }
-  } catch (e) {
-    gcMethods.push("❌ V8 não disponível")
-  }
-
-  console.log("🔍 Métodos de GC disponíveis:")
-  gcMethods.forEach((method) => console.log(`   ${method}`))
-
-  if (typeof global.gc === "undefined") {
-    console.log("🚨 RAILWAY ISSUE: NODE_OPTIONS pode não estar sendo aplicado corretamente")
-    console.log("💡 WORKAROUND: Usando métodos alternativos de limpeza de memória")
-    console.log("🔧 TESTE: Executando limpeza manual...")
-
-    // Testar limpeza manual imediatamente
-    const freed = forceGarbageCollection()
-    console.log(`🧪 Teste de limpeza: ${freed}MB processados`)
-  } else {
-    console.log("✅ GC está funcionando - otimização ativa!")
-    // Testar GC imediatamente
-    forceGarbageCollection()
-  }
-
-  console.log("🧠 ============================================")
-}
-
-// 🧠 LIMPEZA AGRESSIVA DE MEMÓRIA PARA RAILWAY
-function aggressiveMemoryCleanup() {
-  console.log("🧹 === LIMPEZA AGRESSIVA DE MEMÓRIA ===")
-
-  const before = process.memoryUsage()
-
-  try {
-    // 1. Tentar GC normal
-    const gcFreed = forceGarbageCollection()
-
-    // 2. Limpar caches do Node.js
-    if (require.cache) {
-      const cacheKeys = Object.keys(require.cache)
-      console.log(`🗂️ Limpando ${cacheKeys.length} módulos do cache`)
-
-      // Manter apenas módulos essenciais
-      const essentialModules = ["express", "cors", "helmet", "validator"]
-      cacheKeys.forEach((key) => {
-        const isEssential = essentialModules.some((mod) => key.includes(mod))
-        if (!isEssential && !key.includes("node_modules")) {
-          try {
-            delete require.cache[key]
-          } catch (e) {
-            // Ignorar erros de limpeza
-          }
-        }
-      })
-    }
-
-    // 3. Limpar variáveis globais desnecessárias
-    if (global.Buffer && global.Buffer.poolSize > 1) {
-      global.Buffer.poolSize = 1
-      console.log("🔧 Buffer pool size reduzido")
-    }
-
-    // 4. Forçar coleta através de pressão de memória
-    const tempArrays = []
-    for (let i = 0; i < 50; i++) {
-      tempArrays.push(new Array(1000).fill(null))
-    }
-    tempArrays.length = 0
-
-    const after = process.memoryUsage()
-    const totalFreed = Math.round((before.heapUsed - after.heapUsed) / 1024 / 1024)
-
-    console.log(`🎯 Limpeza completa: ${totalFreed}MB liberados`)
-    console.log(
-      `📊 Antes: ${Math.round(before.heapUsed / 1024 / 1024)}MB → Depois: ${Math.round(after.heapUsed / 1024 / 1024)}MB`,
-    )
-
-    return totalFreed
-  } catch (error) {
-    console.log("❌ Erro na limpeza agressiva:", error.message)
-    return 0
-  }
-}
-
-const ALLOWED_DOMAINS = [
-  // TikTok
-  "tiktok.com",
-  "vm.tiktok.com",
-  "vt.tiktok.com",
-  "m.tiktok.com",
-  "www.tiktok.com",
-
-  // Twitter/X
-  "twitter.com",
-  "x.com",
-  "t.co",
-  "mobile.twitter.com",
-  "www.twitter.com",
-  "www.x.com",
-
-  // Instagram
-  "instagram.com",
-  "www.instagram.com",
-  "m.instagram.com",
-
-  // YouTube
-  "youtube.com",
-  "youtu.be",
-  "www.youtube.com",
-  "m.youtube.com",
-  "music.youtube.com",
-
-  // Reddit
-  "reddit.com",
-  "www.reddit.com",
-  "old.reddit.com",
-  "m.reddit.com",
-  "new.reddit.com",
-
-  // Facebook
-  "facebook.com",
-  "fb.watch",
-  "www.facebook.com",
-  "m.facebook.com",
-  "web.facebook.com",
-
-  // Outras plataformas
-  "twitch.tv",
-  "clips.twitch.tv",
-  "www.twitch.tv",
-  "soundcloud.com",
-  "www.soundcloud.com",
-  "m.soundcloud.com",
-  "vimeo.com",
-  "www.vimeo.com",
-  "player.vimeo.com",
-  "dailymotion.com",
-  "www.dailymotion.com",
-  "streamable.com",
-  "www.streamable.com",
-]
-
+const MAX_CONCURRENT_DOWNLOADS = 4
+const MAX_FILE_SIZE = 512 * 1024 * 1024 // 512MB
+const MAX_DURATION = 7200 // 2 hours in seconds
 const DOWNLOADS = path.join(__dirname, "downloads")
 const COOKIES_DIR = path.join(__dirname, "cookies")
+const ytDlpPath = "yt-dlp"
 
-// 🛡️ CONTADOR DE DOWNLOADS ATIVOS - CORRIGIDO
+// Interval handles (stored so they can be cleared on shutdown)
+let memoryCleanupInterval = null
+let fileCleanupInterval = null
+let ytDlpUpdateInterval = null
+
 let activeDownloads = 0
+let lastActivity = Date.now()
 
-// 🐦 COOKIES ESSENCIAIS PARA TWITTER NSFW
-const TWITTER_ESSENTIAL_COOKIES = [
-  "auth_token", // ⭐⭐⭐ CRÍTICO - Token de autenticação principal
-  "ct0", // ⭐⭐⭐ CRÍTICO - CSRF token
-  "twid", // ⭐⭐ IMPORTANTE - Twitter ID
-  "att", // ⭐⭐ IMPORTANTE - Authentication token
-  "personalization_id", // ⭐ ÚTIL - Configurações de conta
+// --- Allowed domains whitelist ---
+const ALLOWED_DOMAINS = [
+  "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com", "www.tiktok.com",
+  "twitter.com", "x.com", "t.co", "mobile.twitter.com", "www.twitter.com", "www.x.com",
+  "instagram.com", "www.instagram.com", "m.instagram.com",
+  "youtube.com", "youtu.be", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+  "reddit.com", "www.reddit.com", "old.reddit.com", "m.reddit.com", "new.reddit.com",
+  "facebook.com", "fb.watch", "www.facebook.com", "m.facebook.com", "web.facebook.com",
+  "twitch.tv", "clips.twitch.tv", "www.twitch.tv",
+  "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com",
+  "vimeo.com", "www.vimeo.com", "player.vimeo.com",
+  "dailymotion.com", "www.dailymotion.com",
+  "streamable.com", "www.streamable.com",
 ]
 
-// 🎯 CORREÇÃO YOUTUBE: User-Agents mais recentes e variados
-const userAgents = [
+// Rotate through these user agents to reduce bot detection
+const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -420,883 +56,249 @@ const userAgents = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
 
-// 🎯 CORREÇÃO YOUTUBE: Função para atualizar yt-dlp automaticamente
-async function ensureYtDlpUpdated() {
-  try {
-    console.log("🔄 Verificando/atualizando yt-dlp...")
-
-    // Tentar atualizar yt-dlp
-    await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp[default]"], { timeout: 60000 })
-    console.log("✅ yt-dlp atualizado com sucesso")
-
-    // Verificar versão
-    const { stdout } = await executeSecureCommand("yt-dlp", ["--version"], { timeout: 10000 })
-    console.log(`📦 Versão do yt-dlp: ${stdout.trim()}`)
-
-    return true
-  } catch (error) {
-    console.log("⚠️ Não foi possível atualizar yt-dlp:", error.message)
-    return false
-  }
-}
-
-// 🎯 CORREÇÃO YOUTUBE: Estratégias múltiplas para bypass
-class YouTubeBypassStrategies {
-  static getStrategy1Args(userAgent, cookieFile) {
-    const args = [
-      "--user-agent",
-      userAgent,
-      "--js-runtimes",
-      "node",
-      "--referer",
-      "https://www.youtube.com/",
-      "--add-header",
-      "Accept-Language:en-US,en;q=0.9",
-      "--add-header",
-      "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "--sleep-interval",
-      "1",
-      "--max-sleep-interval",
-      "3",
-      "--extractor-retries",
-      "5",
-      "--fragment-retries",
-      "5",
-      "--retry-sleep",
-      "2",
-      "--no-warnings",
-      "--no-playlist",
-      "--geo-bypass",
-      "--ignore-errors",
-    ]
-
-    if (cookieFile) {
-      args.push("--cookies", cookieFile)
-    }
-
-    return args
-  }
-
-  static getStrategy2Args(userAgent) {
-    return [
-      "--user-agent",
-      userAgent,
-      "--js-runtimes",
-      "node",
-      "--referer",
-      "https://www.youtube.com/",
-      "--add-header",
-      "Accept-Language:en-US,en;q=0.9",
-      "--add-header",
-      "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "--sleep-interval",
-      "2",
-      "--max-sleep-interval",
-      "5",
-      "--extractor-retries",
-      "3",
-      "--fragment-retries",
-      "3",
-      "--retry-sleep",
-      "3",
-      "--no-warnings",
-      "--no-playlist",
-      "--geo-bypass",
-      "--ignore-errors",
-      "--no-check-certificates",
-    ]
-  }
-
-  static getStrategy3Args(userAgent, cookieFile) {
-    const args = [
-      "--user-agent",
-      userAgent,
-      "--js-runtimes",
-      "node",
-      "--referer",
-      "https://www.youtube.com/",
-      "--add-header",
-      "Accept-Language:en-US,en;q=0.9",
-      "--sleep-interval",
-      "3",
-      "--max-sleep-interval",
-      "7",
-      "--extractor-retries",
-      "2",
-      "--fragment-retries",
-      "2",
-      "--retry-sleep",
-      "5",
-      "--no-warnings",
-      "--no-playlist",
-      "--geo-bypass",
-      "--ignore-errors",
-      "--compat-options",
-      "all",
-    ]
-
-    if (cookieFile) {
-      args.push("--cookies", cookieFile)
-    }
-
-    return args
-  }
-}
-
-// 🕐 FUNÇÃO SIMPLES PARA VERIFICAR DURAÇÃO
-function checkDuration(duration) {
-  if (!duration || duration <= 0) {
-    return { allowed: true, message: null }
-  }
-
-  const durationSeconds = typeof duration === "string" ? parseDurationString(duration) : duration
-
-  if (durationSeconds > MAX_DURATION) {
-    const durationFormatted = formatDuration(durationSeconds)
-    const maxFormatted = formatDuration(MAX_DURATION)
-
-    return {
-      allowed: false,
-      message: `Vídeo muito longo! Máximo: ${maxFormatted}. Seu vídeo: ${durationFormatted}`,
-      duration_formatted: durationFormatted,
-      max_duration: maxFormatted,
-    }
-  }
-
-  return {
-    allowed: true,
-    message: null,
-    duration_formatted: formatDuration(durationSeconds),
-  }
-}
-
-function parseDurationString(durationStr) {
-  if (typeof durationStr === "number") return durationStr
-
-  const parts = durationStr.split(":").reverse()
-  let seconds = 0
-
-  if (parts[0]) seconds += Number.parseInt(parts[0]) || 0
-  if (parts[1]) seconds += (Number.parseInt(parts[1]) || 0) * 60
-  if (parts[2]) seconds += (Number.parseInt(parts[2]) || 0) * 3600
-
-  return seconds
-}
-
-function formatDuration(seconds) {
-  if (seconds < 60) {
-    return `${seconds}s`
-  } else if (seconds < 3600) {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`
-  } else {
-    const hours = Math.floor(seconds / 3600)
-    const mins = Math.floor((seconds % 3600) / 60)
-    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
-  }
-}
-
-// 🔍 FUNÇÃO PARA VALIDAR FORMATO DE COOKIES
-function validateCookieFormat(cookieContent, filename) {
-  if (!cookieContent || cookieContent.length < 10) {
-    return { valid: false, reason: "Cookie muito pequeno ou vazio" }
-  }
-
-  const lines = cookieContent.split("\n")
-  let validLines = 0
-  let invalidLines = 0
-  const issues = []
-
-  lines.forEach((line, index) => {
-    line = line.trim()
-
-    // Pular comentários e linhas vazias
-    if (!line || line.startsWith("#")) {
-      return
-    }
-
-    // Formato Netscape: domain \t flag \t path \t secure \t expiration \t name \t value
-    const fields = line.split("\t")
-
-    if (fields.length >= 6) {
-      validLines++
-
-      // Verificar se o domínio faz sentido
-      if (!fields[0].includes(".")) {
-        issues.push(`Linha ${index + 1}: Domínio suspeito: ${fields[0]}`)
-      }
-
-      // Verificar expiração
-      const expiration = Number.parseInt(fields[4])
-      if (expiration && expiration < Date.now() / 1000) {
-        issues.push(`Linha ${index + 1}: Cookie expirado: ${fields[5]}`)
-      }
-    } else {
-      invalidLines++
-      issues.push(`Linha ${index + 1}: Formato inválido (${fields.length} campos, precisa >= 6)`)
-    }
-  })
-
-  return {
-    valid: validLines > 0,
-    validLines,
-    invalidLines,
-    issues,
-    reason: validLines === 0 ? "Nenhuma linha válida encontrada" : null,
-  }
-}
-
-// 🐦 FUNÇÃO PARA VALIDAR COOKIES ESPECÍFICOS DO TWITTER
-function validateTwitterCookies(cookieContent) {
-  const lines = cookieContent.split("\n")
-  const foundCookies = new Set()
-
-  lines.forEach((line) => {
-    if (line.trim() && !line.startsWith("#")) {
-      const fields = line.split("\t")
-      if (fields.length >= 6) {
-        const cookieName = fields[5] // Nome do cookie
-        foundCookies.add(cookieName)
-      }
-    }
-  })
-
-  const criticalMissing = []
-  const importantMissing = []
-
-  // Verificar cookies críticos
-  if (!foundCookies.has("auth_token")) criticalMissing.push("auth_token")
-  if (!foundCookies.has("ct0")) criticalMissing.push("ct0")
-
-  // Verificar cookies importantes
-  if (!foundCookies.has("twid")) importantMissing.push("twid")
-  if (!foundCookies.has("att")) importantMissing.push("att")
-
-  return {
-    valid: criticalMissing.length === 0,
-    criticalMissing,
-    importantMissing,
-    foundCookies: Array.from(foundCookies),
-    nsfwReady: criticalMissing.length === 0,
-    recommendation:
-      criticalMissing.length === 0 ? "✅ Pronto para NSFW" : "❌ Faltam cookies críticos - faça login novamente",
-  }
-}
-
-// 🔍 FUNÇÃO PARA DEBUGAR SISTEMA DE COOKIES
-function debugCookieSystem() {
-  console.log("\n🔍 === DIAGNÓSTICO COMPLETO DE COOKIES ===")
-
-  // Verificar variáveis de ambiente
-  console.log("📋 VARIÁVEIS DE AMBIENTE:")
-  let envVarsFound = 0
-
-  // Google Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 10; i++) {
-    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
-
-      const validation = validateCookieFormat(cookieContent, envVar)
-      if (validation.valid) {
-        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
-      } else {
-        console.log(`   ❌ Formato: ${validation.reason}`)
-        validation.issues.slice(0, 3).forEach((issue) => console.log(`   ⚠️ ${issue}`))
-      }
-
-      console.log(`   📄 Preview: ${cookieContent.substring(0, 80)}...`)
-    }
-  }
-
-  // Instagram Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 8; i++) {
-    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
-
-      const validation = validateCookieFormat(cookieContent, envVar)
-      if (validation.valid) {
-        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
-      } else {
-        console.log(`   ❌ Formato: ${validation.reason}`)
-      }
-    }
-  }
-
-  // 🐦 Twitter Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 5; i++) {
-    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      console.log(`✅ ${envVar}: ${cookieContent.length} caracteres`)
-
-      const validation = validateCookieFormat(cookieContent, envVar)
-      const twitterValidation = validateTwitterCookies(cookieContent)
-
-      if (validation.valid) {
-        console.log(`   ✅ Formato: OK (${validation.validLines} linhas válidas)`)
-      } else {
-        console.log(`   ❌ Formato: ${validation.reason}`)
-      }
-
-      console.log(`   🐦 Twitter: ${twitterValidation.recommendation}`)
-      if (twitterValidation.criticalMissing.length > 0) {
-        console.log(`   ❌ Faltam críticos: ${twitterValidation.criticalMissing.join(", ")}`)
-      }
-    }
-  }
-
-  console.log(`📊 Total de variáveis encontradas: ${envVarsFound}`)
-
-  // Verificar arquivos criados
-  console.log("\n📁 ARQUIVOS DE COOKIE:")
-  try {
-    if (fs.existsSync(COOKIES_DIR)) {
-      const files = fs.readdirSync(COOKIES_DIR).filter((f) => f.endsWith(".txt"))
-
-      if (files.length === 0) {
-        console.log("❌ Nenhum arquivo de cookie encontrado")
-      } else {
-        files.forEach((file) => {
-          const filepath = path.join(COOKIES_DIR, file)
-          const stats = fs.statSync(filepath)
-          const content = fs.readFileSync(filepath, "utf8")
-          const validation = validateCookieFormat(content, file)
-
-          console.log(`📄 ${file}:`)
-          console.log(`   📏 Tamanho: ${stats.size} bytes`)
-          console.log(`   📝 Linhas: ${content.split("\n").length}`)
-          console.log(`   ${validation.valid ? "✅" : "❌"} Formato: ${validation.valid ? "OK" : validation.reason}`)
-
-          // 🐦 Validação específica para Twitter
-          if (file.startsWith("twitter_")) {
-            const twitterValidation = validateTwitterCookies(content)
-            console.log(`   🐦 NSFW: ${twitterValidation.nsfwReady ? "✅ PRONTO" : "❌ FALTAM COOKIES"}`)
-          }
-
-          if (validation.issues.length > 0) {
-            console.log(`   ⚠️ Problemas: ${validation.issues.length}`)
-          }
-        })
-      }
-    } else {
-      console.log("❌ Diretório de cookies não existe")
-    }
-  } catch (error) {
-    console.error("❌ Erro ao ler cookies:", error.message)
-  }
-
-  // Verificar pools
-  console.log("\n🍪 POOLS DE COOKIES:")
-  console.log(`🔵 Google Pool: ${googleCookiePool.length} arquivos`)
-  console.log(`📸 Instagram Pool: ${instagramCookiePool.length} arquivos`)
-  console.log(`🐦 Twitter Pool: ${twitterCookiePool.length} arquivos`)
-  console.log(`📊 General Pool: ${generalCookiePool.length} arquivos`)
-
-  if (googleCookiePool.length === 0 && instagramCookiePool.length === 0 && twitterCookiePool.length === 0) {
-    console.log("❌ NENHUM COOKIE CARREGADO!")
-    console.log("💡 Verifique se as variáveis de ambiente estão corretas")
-  }
-
-  console.log("🔍 === FIM DO DIAGNÓSTICO ===\n")
-}
-
-// 🛡️ MIDDLEWARE DE SEGURANÇA
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", "data:", "https:"],
-      },
-    },
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true,
-    },
-  }),
-)
-
-// 🚨 CORS CONFIGURAÇÃO CRÍTICA - CORRIGIDA PARA EVITAR SLEEP MODE ISSUES
-app.use(
-  cors({
-    origin: [
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "https://www.waifuconvert.com",
-      "https://waifuconvert.com",
-      "https://waifuconvert.vercel.app",
-    ],
-    credentials: true,
-    optionsSuccessStatus: 200,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
-    exposedHeaders: ["Content-Length", "Content-Type"],
-    preflightContinue: false,
-  }),
-)
-
-// 🚨 CORS PREFLIGHT HANDLER - GARANTIR QUE SEMPRE RESPONDA
-app.options("*", (req, res) => {
-  res.header("Access-Control-Allow-Origin", req.headers.origin || "*")
-  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Content-Length, X-Requested-With, Accept, Origin",
-  )
-  res.header("Access-Control-Allow-Credentials", "true")
-  res.sendStatus(200)
-})
-
-// 🛡️ RATE LIMITING MAIS AMIGÁVEL
-const downloadLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 20,
-  message: {
-    error: "Muitas tentativas de download. Tente novamente em alguns minutos.",
-    type: "rate_limit_exceeded",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-const generalLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 60,
-  message: {
-    error: "Muitas requisições. Tente novamente em 1 minuto.",
-    type: "rate_limit_exceeded",
-  },
-})
-
-app.use(generalLimiter)
-app.use("/download", downloadLimiter)
-
-// 🧠 MIDDLEWARE PARA RASTREAR ATIVIDADE (SEM SLEEP MODE)
-app.use((req, res, next) => {
-  resourceEconomizer.updateActivity()
-  lastActivity = Date.now()
-  console.log(`🌐 Request: ${req.method} ${req.path} from ${req.headers.origin || 'unknown'} - Activity updated`)
-  next()
-})
-
-// 🛡️ VALIDAÇÃO DE URL SEGURA
-function isValidUrl(url) {
-  try {
-    if (
-      !validator.isURL(url, {
-        protocols: ["http", "https"],
-        require_protocol: true,
-        require_valid_protocol: true,
-        allow_underscores: true,
-        allow_trailing_dot: false,
-        allow_protocol_relative_urls: false,
-        allow_fragments: true,
-        allow_query_components: true,
-      })
-    ) {
-      return false
-    }
-
-    const parsedUrl = new URL(url)
-    const hostname = parsedUrl.hostname.toLowerCase()
-
-    const isAllowedDomain = ALLOWED_DOMAINS.some((domain) => {
-      if (hostname === domain) return true
-      if (hostname.endsWith("." + domain)) return true
-      if (domain === "tiktok.com" && (hostname.includes("tiktok") || hostname.includes("musically"))) return true
-      if (
-        domain === "twitter.com" &&
-        (hostname.includes("twitter") || hostname.includes("x.com") || hostname.includes("twimg"))
-      )
-        return true
-      if (domain === "youtube.com" && (hostname.includes("youtube") || hostname.includes("youtu"))) return true
-      if (domain === "instagram.com" && (hostname.includes("instagram") || hostname.includes("cdninstagram")))
-        return true
-      return false
-    })
-
-    if (!isAllowedDomain) {
-      console.warn(`🚫 Domínio não permitido: ${hostname}`)
-      return false
-    }
-
-    const privateIpPatterns = [
-      /^127\./,
-      /^192\.168\./,
-      /^10\./,
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-      /^0\.0\.0\.0$/,
-      /^localhost$/i,
-    ]
-
-    const isPrivateIp = privateIpPatterns.some((pattern) => pattern.test(hostname))
-    if (isPrivateIp) {
-      console.warn(`🚫 IP privado/local bloqueado: ${hostname}`)
-      return false
-    }
-
-    return true
-  } catch (error) {
-    console.error("❌ Erro na validação de URL:", error.message)
-    return false
-  }
-}
-
-function sanitizeInput(input, maxLength = 100) {
-  if (typeof input !== "string") return ""
-  return input
-    .trim()
-    .substring(0, maxLength)
-    .replace(/[<>"'&]/g, "")
-    .replace(/\0/g, "")
-}
-
-function generateSecureFilename(title, quality, format, uniqueId) {
-  const safeTitle =
-    sanitizeInput(title, 50)
-      .replace(/[^\w\s\-_.()]/g, "")
-      .replace(/\s+/g, "_")
-      .replace(/_{2,}/g, "_")
-      .trim() || "WaifuConvert"
-
-  const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
-  const ext = format === "mp3" ? "mp3" : "mp4"
-
-  return `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
-}
-
-// 🛡️ VALIDAÇÃO MAIS AMIGÁVEL - CORRIGIDA COM 144P
-function validateDownloadParams(url, format, quality) {
-  const errors = []
-
-  if (!url || typeof url !== "string") {
-    errors.push("Por favor, cole um link válido")
-  } else if (!isValidUrl(url)) {
-    try {
-      const hostname = new URL(url).hostname.toLowerCase()
-      if (hostname.includes("localhost") || hostname.startsWith("127.") || hostname.startsWith("192.168.")) {
-        errors.push("Links locais não são permitidos por segurança")
-      } else {
-        errors.push(
-          `Este site não é suportado ainda. Tente: TikTok, Twitter/X, Instagram, YouTube, Reddit, Facebook, Twitch, SoundCloud, Vimeo`,
-        )
-      }
-    } catch {
-      errors.push("Link inválido. Certifique-se de copiar a URL completa (com https://)")
-    }
-  }
-
-  if (!format || !["mp3", "mp4"].includes(format)) {
-    errors.push("Escolha MP3 (áudio) ou MP4 (vídeo)")
-  }
-
-  if (quality) {
-    const q = Number.parseInt(quality)
-    if (format === "mp3" && (q < 64 || q > 320)) {
-      errors.push("Qualidade de áudio deve estar entre 64 e 320 kbps")
-    } else if (format === "mp4" && ![144, 240, 360, 480, 720, 1080].includes(q)) {
-      // ✅ ADICIONADO 144P e 240P
-      errors.push("Qualidade de vídeo deve ser 144p, 240p, 360p, 480p, 720p ou 1080p")
-    }
-  }
-
-  return errors
-}
-
-function executeSecureCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 600000
-
-    console.log("🚀 Executando comando seguro:", command, args.slice(0, 3).join(" "), "...")
-
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeout,
-      killSignal: "SIGKILL",
-    })
-
-    let stdout = ""
-    let stderr = ""
-
-    child.stdout.on("data", (data) => {
-      stdout += data.toString()
-    })
-
-    child.stderr.on("data", (data) => {
-      stderr += data.toString()
-    })
-
-    child.on("close", (code) => {
-      // yt-dlp pode sair com código não-zero mesmo em sucesso parcial (ex: avisos, legendas falharam)
-      // Só rejeitar se código for não-zero E stderr contiver erro real E stdout vazio
-      if (code === 0) {
-        resolve({ stdout, stderr })
-      } else if (code !== 0 && stdout.length > 0) {
-        // Houve saída - provavelmente sucesso com avisos
-        resolve({ stdout, stderr })
-      } else if (code !== 0 && stderr && !stderr.toLowerCase().includes("error")) {
-        // stderr só tem warnings, não erros reais
-        resolve({ stdout, stderr })
-      } else {
-        reject(new Error(`Comando falhou com código ${code}: ${stderr}`))
-      }
-    })
-
-    child.on("error", (error) => {
-      reject(error)
-    })
-
-    const timeoutId = setTimeout(() => {
-      child.kill("SIGKILL")
-      reject(new Error("Comando excedeu tempo limite"))
-    }, timeout)
-
-    child.on("close", () => {
-      clearTimeout(timeoutId)
-    })
-  })
-}
-
-const ytDlpPath = "yt-dlp"
-
-// 🔧 FUNÇÃO CORRIGIDA - REMOVIDA VERIFICAÇÃO DE '=' INCORRETA
-function createSecureCookieFiles() {
-  console.log("🛡️ Criando arquivos de cookie seguros...")
-
-  if (!fs.existsSync(COOKIES_DIR)) {
-    fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
-  }
-
-  let cookiesCreated = 0
-
-  // Google Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 10; i++) {
-    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
-
-      const filename = `google_conta${i.toString().padStart(2, "0")}.txt`
-      const filepath = path.join(COOKIES_DIR, filename)
-
-      // 🔧 CORREÇÃO: Removida verificação incorreta de '=' - cookies Netscape são válidos sem '='
-      if (cookieContent.length > 100) {
-        // Apenas verificar tamanho mínimo razoável
-        // 🔍 VALIDAR FORMATO ANTES DE SALVAR
-        const validation = validateCookieFormat(cookieContent, filename)
-
-        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
-        console.log(`✅ Cookie Google ${i} criado: ${filename}`)
-
-        if (validation.valid) {
-          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
-        } else {
-          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
-          // MAS AINDA ASSIM CRIAR O ARQUIVO - pode ser válido mesmo com aviso
-        }
-
-        cookiesCreated++
-      } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
-      }
-    }
-  }
-
-  // Instagram Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 8; i++) {
-    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
-
-      const filename = `instagram_conta${i.toString().padStart(2, "0")}.txt`
-      const filepath = path.join(COOKIES_DIR, filename)
-
-      // 🔧 CORREÇÃO: Removida verificação incorreta de '='
-      if (cookieContent.length > 100) {
-        const validation = validateCookieFormat(cookieContent, filename)
-
-        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
-        console.log(`✅ Cookie Instagram ${i} criado: ${filename}`)
-
-        if (validation.valid) {
-          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
-        } else {
-          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
-        }
-
-        cookiesCreated++
-      } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
-      }
-    }
-  }
-
-  // 🐦 Twitter Cookies - CORREÇÃO APLICADA
-  for (let i = 1; i <= 5; i++) {
-    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      console.log(`🔍 Processando ${envVar}: ${cookieContent.length} caracteres`)
-
-      const filename = `twitter_conta${i.toString().padStart(2, "0")}.txt`
-      const filepath = path.join(COOKIES_DIR, filename)
-
-      // 🔧 CORREÇÃO: Removida verificação incorreta de '='
-      if (cookieContent.length > 100) {
-        const validation = validateCookieFormat(cookieContent, filename)
-        const twitterValidation = validateTwitterCookies(cookieContent)
-
-        fs.writeFileSync(filepath, cookieContent, { mode: 0o600 })
-        console.log(`✅ Cookie Twitter ${i} criado: ${filename}`)
-
-        if (validation.valid) {
-          console.log(`   ✅ Formato válido: ${validation.validLines} linhas`)
-        } else {
-          console.log(`   ⚠️ Formato suspeito: ${validation.reason}`)
-        }
-
-        // 🐦 Validação específica do Twitter
-        console.log(`   🐦 ${twitterValidation.recommendation}`)
-        if (twitterValidation.nsfwReady) {
-          console.log(`   🔞 NSFW habilitado - cookies críticos presentes`)
-        } else {
-          console.log(`   ❌ NSFW não disponível - faltam: ${twitterValidation.criticalMissing.join(", ")}`)
-        }
-
-        cookiesCreated++
-      } else {
-        console.log(`❌ Cookie ${envVar} muito pequeno: ${cookieContent.length} chars`)
-      }
-    }
-  }
-
-  console.log(`🎯 Total de cookies criados: ${cookiesCreated}`)
-
-  // 🔍 EXECUTAR DIAGNÓSTICO COMPLETO APÓS 2 SEGUNDOS
-  setTimeout(() => {
-    debugCookieSystem()
-  }, 2000)
-
-  return cookiesCreated
-}
-
+// --- Cookie pools (loaded from env vars on startup) ---
 let googleCookiePool = []
 let instagramCookiePool = []
-let twitterCookiePool = [] // 🐦 NOVO POOL TWITTER
+let twitterCookiePool = []
 let generalCookiePool = []
 
-function loadCookiePool() {
+// In-memory map of download keys → file paths (avoids exposing real paths to clients)
+const fileMap = new Map()
+
+// ============================================================
+// MEMORY MANAGEMENT
+// YouTube token algorithms change every 2-4 weeks, so we keep
+// memory lean to avoid OOM restarts on Railway's limited RAM.
+// ============================================================
+
+function forceGarbageCollection() {
   try {
-    if (!fs.existsSync(COOKIES_DIR)) {
-      fs.mkdirSync(COOKIES_DIR, { recursive: true })
-      return
+    if (typeof global.gc === "function") {
+      const before = process.memoryUsage().heapUsed
+      global.gc()
+      const freed = Math.round((before - process.memoryUsage().heapUsed) / 1024 / 1024)
+      console.log(`[GC] Native GC freed ${freed}MB`)
+      return freed
     }
 
-    const files = fs.readdirSync(COOKIES_DIR).filter((file) => file.endsWith(".txt"))
-
-    googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
-    instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
-    twitterCookiePool = files.filter((f) => f.startsWith("twitter_")).map((f) => path.join(COOKIES_DIR, f)) // 🐦 NOVO
-    generalCookiePool = files.map((file) => path.join(COOKIES_DIR, file))
-
-    console.log(`🔵 Google cookies: ${googleCookiePool.length}`)
-    console.log(`📸 Instagram cookies: ${instagramCookiePool.length}`)
-    console.log(`🐦 Twitter cookies: ${twitterCookiePool.length}`) // 🐦 NOVO
-    console.log(`🍪 Total cookies: ${generalCookiePool.length}`)
-  } catch (error) {
-    console.error("❌ Erro ao carregar cookies:", error)
+    // Fallback: create memory pressure to hint the V8 GC
+    const dummy = new Array(1000000).fill("x")
+    dummy.length = 0
+    console.log("[GC] Native GC unavailable - used manual pressure hint")
+    return 0
+  } catch (err) {
+    console.error("[GC] Error during garbage collection:", err.message)
+    return 0
   }
 }
 
-function detectPlatform(url) {
+function runMemoryCleanup() {
+  const before = process.memoryUsage()
+  forceGarbageCollection()
+
+  // Clear non-essential require cache entries
+  if (require.cache) {
+    const essential = ["express", "cors", "helmet", "validator", "child_process", "fs", "path", "rate-limit", "crypto", "v8"]
+    let cleared = 0
+    for (const key of Object.keys(require.cache)) {
+      if (!essential.some((m) => key.includes(m)) && !key.includes("node_modules") && key.startsWith(process.cwd())) {
+        try { delete require.cache[key]; cleared++ } catch (_) {}
+      }
+    }
+    if (cleared > 0) console.log(`[GC] Cleared ${cleared} require cache entries`)
+  }
+
+  const freed = Math.round((before.heapUsed - process.memoryUsage().heapUsed) / 1024 / 1024)
+  console.log(`[GC] Cleanup complete. Freed ~${freed}MB. Heap: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`)
+}
+
+function logMemoryUsage() {
+  const used = process.memoryUsage()
+  const mb = (b) => Math.round(b / 1024 / 1024)
+  console.log(`[MEM] Heap: ${mb(used.heapUsed)}MB / RSS: ${mb(used.rss)}MB / External: ${mb(used.external)}MB`)
+
+  if (used.heapUsed > 200 * 1024 * 1024) {
+    console.warn("[MEM] High memory usage detected - triggering cleanup")
+    runMemoryCleanup()
+  }
+
+  return { heapUsed: mb(used.heapUsed), rss: mb(used.rss), external: mb(used.external) }
+}
+
+// ============================================================
+// YT-DLP AUTO UPDATE
+// YouTube breaks yt-dlp every 2-4 weeks by changing their
+// token-signing algorithm (nsig/sig). Keeping yt-dlp updated
+// automatically prevents the need for manual redeploys.
+// ============================================================
+
+async function ensureYtDlpUpdated() {
   try {
-    const hostname = new URL(url).hostname.toLowerCase()
-    if (hostname.includes("tiktok")) return "tiktok"
-    if (hostname.includes("twitter") || hostname.includes("x.com")) return "twitter"
-    if (hostname.includes("youtube") || hostname.includes("youtu.be")) return "youtube"
-    if (hostname.includes("instagram")) return "instagram"
-    if (hostname.includes("reddit")) return "reddit"
-    if (hostname.includes("facebook")) return "facebook"
-    return "unknown"
-  } catch (error) {
-    return "unknown"
+    console.log("[YT-DLP] Checking for updates...")
+    await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp[default]"], { timeout: 60000 })
+    const { stdout } = await executeSecureCommand("yt-dlp", ["--version"], { timeout: 10000 })
+    console.log(`[YT-DLP] Updated successfully. Version: ${stdout.trim()}`)
+    return true
+  } catch (err) {
+    console.warn("[YT-DLP] Update failed (will use current version):", err.message)
+    return false
   }
 }
 
-// 🔍 VERSÃO COM DEBUG da função getSmartCookie - ATUALIZADA COM TWITTER
+// ============================================================
+// COOKIE MANAGEMENT
+// Cookies are stored as Railway environment variables and
+// written to disk as Netscape-format .txt files on startup.
+// ============================================================
+
+// Validates Netscape cookie file format (tab-separated, 6+ fields)
+function validateCookieFormat(cookieContent) {
+  if (!cookieContent || cookieContent.length < 10) return { valid: false, reason: "Too short or empty", validLines: 0 }
+
+  let validLines = 0
+  const issues = []
+
+  for (const [i, rawLine] of cookieContent.split("\n").entries()) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#")) continue
+
+    const fields = line.split("\t")
+    if (fields.length >= 6) {
+      validLines++
+      if (!fields[0].includes(".")) issues.push(`Line ${i + 1}: suspicious domain "${fields[0]}"`)
+      const exp = Number.parseInt(fields[4])
+      if (exp && exp < Date.now() / 1000) issues.push(`Line ${i + 1}: expired cookie "${fields[5]}"`)
+    } else {
+      issues.push(`Line ${i + 1}: invalid format (${fields.length} fields, need >= 6)`)
+    }
+  }
+
+  return { valid: validLines > 0, validLines, issues, reason: validLines === 0 ? "No valid lines found" : null }
+}
+
+// Checks that Twitter-specific required cookies are present
+function validateTwitterCookies(cookieContent) {
+  const found = new Set()
+  for (const line of cookieContent.split("\n")) {
+    const fields = line.trim().split("\t")
+    if (fields.length >= 6) found.add(fields[5])
+  }
+
+  const criticalMissing = ["auth_token", "ct0"].filter((c) => !found.has(c))
+  return {
+    valid: criticalMissing.length === 0,
+    nsfwReady: criticalMissing.length === 0,
+    criticalMissing,
+    foundCookies: Array.from(found),
+  }
+}
+
+// Reads cookie env vars, writes them to disk, and populates cookie pools
+function createSecureCookieFiles() {
+  if (!fs.existsSync(COOKIES_DIR)) fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
+
+  let created = 0
+  const writeIfValid = (envVar, filename) => {
+    const content = process.env[envVar]
+    if (!content || content.length <= 100) return
+
+    const filepath = path.join(COOKIES_DIR, filename)
+    const validation = validateCookieFormat(content)
+    fs.writeFileSync(filepath, content, { mode: 0o600 })
+    console.log(`[COOKIES] Written ${filename} (${validation.validLines} valid lines${validation.valid ? "" : " - WARNING: format issues"})`)
+    created++
+  }
+
+  for (let i = 1; i <= 10; i++) writeIfValid(`GOOGLE_COOKIE_${String(i).padStart(2, "0")}`, `google_conta${String(i).padStart(2, "0")}.txt`)
+  for (let i = 1; i <= 8; i++) writeIfValid(`INSTAGRAM_COOKIE_${String(i).padStart(2, "0")}`, `instagram_conta${String(i).padStart(2, "0")}.txt`)
+  for (let i = 1; i <= 5; i++) {
+    const envVar = `TWITTER_COOKIE_${String(i).padStart(2, "0")}`
+    const content = process.env[envVar]
+    if (content && content.length > 100) {
+      const filename = `twitter_conta${String(i).padStart(2, "0")}.txt`
+      fs.writeFileSync(path.join(COOKIES_DIR, filename), content, { mode: 0o600 })
+      const tw = validateTwitterCookies(content)
+      console.log(`[COOKIES] Written ${filename} - NSFW ready: ${tw.nsfwReady}${tw.criticalMissing.length ? " (missing: " + tw.criticalMissing.join(", ") + ")" : ""}`)
+      created++
+    }
+  }
+
+  console.log(`[COOKIES] Total cookie files created: ${created}`)
+  return created
+}
+
+function loadCookiePool() {
+  if (!fs.existsSync(COOKIES_DIR)) { fs.mkdirSync(COOKIES_DIR, { recursive: true }); return }
+
+  const files = fs.readdirSync(COOKIES_DIR).filter((f) => f.endsWith(".txt"))
+  googleCookiePool = files.filter((f) => f.startsWith("google_")).map((f) => path.join(COOKIES_DIR, f))
+  instagramCookiePool = files.filter((f) => f.startsWith("instagram_")).map((f) => path.join(COOKIES_DIR, f))
+  twitterCookiePool = files.filter((f) => f.startsWith("twitter_")).map((f) => path.join(COOKIES_DIR, f))
+  generalCookiePool = files.map((f) => path.join(COOKIES_DIR, f))
+
+  console.log(`[COOKIES] Pools loaded - Google: ${googleCookiePool.length}, Instagram: ${instagramCookiePool.length}, Twitter: ${twitterCookiePool.length}, Total: ${generalCookiePool.length}`)
+}
+
+// Returns the best cookie file for the given platform
 function getSmartCookie(platform) {
-  let pool = []
-  let poolName = ""
-
-  switch (platform.toLowerCase()) {
-    case "youtube":
-    case "reddit":
-      pool = googleCookiePool
-      poolName = "Google"
-      break
-    case "twitter":
-    case "x":
-      // 🐦 PRIORIZAR COOKIES ESPECÍFICOS DO TWITTER
-      pool = twitterCookiePool.length > 0 ? twitterCookiePool : googleCookiePool
-      poolName = twitterCookiePool.length > 0 ? "Twitter" : "Google (fallback)"
-      break
-    case "instagram":
-      pool = instagramCookiePool
-      poolName = "Instagram"
-      break
-    default:
-      pool = generalCookiePool
-      poolName = "General"
+  const poolMap = {
+    youtube: googleCookiePool,
+    reddit: googleCookiePool,
+    twitter: twitterCookiePool.length > 0 ? twitterCookiePool : googleCookiePool,
+    x: twitterCookiePool.length > 0 ? twitterCookiePool : googleCookiePool,
+    instagram: instagramCookiePool,
   }
-
-  if (pool.length === 0) {
-    console.log(`🍪 Nenhum cookie ${poolName} disponível para ${platform}`)
-    return null
-  }
+  const pool = poolMap[platform] || generalCookiePool
+  if (!pool.length) { console.log(`[COOKIES] No cookie available for platform: ${platform}`); return null }
 
   const selected = pool[Math.floor(Math.random() * pool.length)]
-  console.log(`🍪 Cookie selecionado para ${platform}: ${path.basename(selected)} (pool: ${poolName})`)
-
-  // 🐦 Log especial para Twitter
-  if (platform === "twitter" && poolName === "Twitter") {
-    console.log(`   🔞 Cookie Twitter específico - NSFW habilitado`)
-  }
-
+  console.log(`[COOKIES] Selected for ${platform}: ${path.basename(selected)}`)
   return selected
 }
 
-function getRandomFromPool(pool) {
-  if (pool.length === 0) return null
-  return pool[Math.floor(Math.random() * pool.length)]
+// ============================================================
+// COMMAND EXECUTION
+// ============================================================
+
+// Runs a child process safely and resolves with stdout/stderr.
+// yt-dlp often exits with code 1 even on partial success (e.g. subtitle
+// download failed), so we only reject if there is no usable output.
+function executeSecureCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = options.timeout || 600000
+    console.log(`[EXEC] ${command} ${args.slice(0, 4).join(" ")} ...`)
+
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], killSignal: "SIGKILL" })
+    let stdout = ""
+    let stderr = ""
+
+    child.stdout.on("data", (d) => { stdout += d.toString() })
+    child.stderr.on("data", (d) => { stderr += d.toString() })
+
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("Command timed out")) }, timeout)
+
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      // Resolve if: success, OR has output (partial success with warnings), OR stderr has no real "error" keyword
+      if (code === 0 || stdout.length > 0 || (stderr && !stderr.toLowerCase().includes("error"))) {
+        resolve({ stdout, stderr })
+      } else {
+        reject(new Error(`Command failed (exit ${code}): ${stderr.substring(0, 500)}`))
+      }
+    })
+
+    child.on("error", reject)
+  })
 }
 
-function getRandomUserAgent() {
-  return userAgents[Math.floor(Math.random() * userAgents.length)]
-}
+// ============================================================
+// FORMAT SELECTION
+// yt-dlp format strings that respect the requested quality.
+// Falls back progressively to avoid "format not available" errors.
+// ============================================================
 
-// SELETOR DE FORMATO COM QUALIDADE RESPEITADA
 function getFormatSelector(format, quality, platform) {
-  if (format === "mp3") {
-    return "bestaudio/best"
-  }
+  if (format === "mp3") return "bestaudio/best"
 
   const h = Number.parseInt(quality)
 
@@ -1313,1993 +315,859 @@ function getFormatSelector(format, quality, platform) {
     return "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best"
   }
 
-  if (h && !isNaN(h)) {
-    return `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`
-  }
-
+  if (h && !isNaN(h)) return `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`
   return "best"
 }
 
-// 🎯 SELETOR DE FORMATO ULTRA SIMPLES (FALLBACK FINAL)
+// Simplified fallback format selector used when the primary one fails
 function getSimpleFormatSelector(format, quality) {
-  if (format === "mp3") {
-    return "bestaudio[ext=m4a]/bestaudio/best"
-  }
+  if (format === "mp3") return "bestaudio[ext=m4a]/bestaudio/best"
   const h = Number.parseInt(quality)
-  if (h && !isNaN(h)) {
-    return `best[height<=${h}]/best`
-  }
-  return "best"
+  return h && !isNaN(h) ? `best[height<=${h}]/best` : "best"
 }
 
-// 🔧 COMANDO SEGURO CORRIGIDO - REMOVIDO --no-call-home (DEPRECATED)
+// ============================================================
+// YT-DLP ARGUMENT BUILDERS
+// ============================================================
+
+// Base args applied to all platforms
 function buildSecureCommand(userAgent, cookieFile, platform) {
-  const baseArgs = [
-    "--user-agent",
-    userAgent,
+  const args = [
+    "--user-agent", userAgent,
     "--no-playlist",
     "--no-check-certificates",
-    "--extractor-retries",
-    "3",
-    "--fragment-retries",
-    "3",
-    "--retry-sleep",
-    "2",
-    // REMOVIDO: "--no-call-home" - Esta opcao foi deprecated no yt-dlp
+    "--extractor-retries", "3",
+    "--fragment-retries", "3",
+    "--retry-sleep", "2",
     "--geo-bypass",
-    "--socket-timeout",
-    "30",
+    "--socket-timeout", "30",
     "--no-warnings",
     "--ignore-errors",
-    "--ignore-no-formats-error",  // CRITICO: evita erro "No video formats found"
+    "--ignore-no-formats-error",
   ]
 
-  if (platform === "tiktok") {
-    baseArgs.push("--no-part", "--concurrent-fragments", "1")
-  }
+  if (platform === "tiktok") args.push("--no-part", "--concurrent-fragments", "1")
+  if (platform === "instagram") args.push("--sleep-interval", "1", "--max-sleep-interval", "2")
+  if (platform === "twitter") args.push("--sleep-interval", "1")
 
-  if (platform === "instagram") {
-    baseArgs.push("--sleep-interval", "1", "--max-sleep-interval", "2")
-  }
+  // YouTube requires a JS runtime to solve token challenges (yt-dlp 2025+)
+  if (platform === "youtube") args.push("--js-runtimes", "node", "--no-abort-on-error", "--ignore-no-formats-error")
 
-  if (platform === "twitter") {
-    baseArgs.push("--sleep-interval", "1")
-  }
-
-  // YouTube: Configuracao otimizada para evitar erros de formato
-  // Baseado em como conversores profissionais funcionam
-  if (platform === "youtube") {
-    baseArgs.push(
-      // Runtime JS necessario para resolver challenges do YouTube (yt-dlp 2025.11.12+)
-      "--js-runtimes",
-      "node",
-      "--no-abort-on-error",
-      // Nao verificar formatos durante extracao de info
-      "--ignore-no-formats-error"
-    )
-  }
-
-  if (cookieFile) {
-    baseArgs.push("--cookies", cookieFile)
-  }
-
-  return baseArgs
+  if (cookieFile) args.push("--cookies", cookieFile)
+  return args
 }
 
-function isYouTubeCriticalError(errorMessage) {
-  const criticalErrors = [
-    "Did not get any data blocks",
-    "ERROR: Did not get any data blocks",
+// Three increasingly lenient strategies for bypassing YouTube bot detection
+class YouTubeBypassStrategies {
+  static strategy1(userAgent, cookieFile) {
+    const args = [
+      "--user-agent", userAgent,
+      "--js-runtimes", "node",
+      "--referer", "https://www.youtube.com/",
+      "--add-header", "Accept-Language:en-US,en;q=0.9",
+      "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "--sleep-interval", "1",
+      "--max-sleep-interval", "3",
+      "--extractor-retries", "5",
+      "--fragment-retries", "5",
+      "--retry-sleep", "2",
+      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors",
+    ]
+    if (cookieFile) args.push("--cookies", cookieFile)
+    return args
+  }
+
+  static strategy2(userAgent) {
+    return [
+      "--user-agent", userAgent,
+      "--js-runtimes", "node",
+      "--referer", "https://www.youtube.com/",
+      "--add-header", "Accept-Language:en-US,en;q=0.9",
+      "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "--sleep-interval", "2",
+      "--max-sleep-interval", "5",
+      "--extractor-retries", "3",
+      "--fragment-retries", "3",
+      "--retry-sleep", "3",
+      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors", "--no-check-certificates",
+    ]
+  }
+
+  static strategy3(userAgent, cookieFile) {
+    const args = [
+      "--user-agent", userAgent,
+      "--js-runtimes", "node",
+      "--referer", "https://www.youtube.com/",
+      "--add-header", "Accept-Language:en-US,en;q=0.9",
+      "--sleep-interval", "3",
+      "--max-sleep-interval", "7",
+      "--extractor-retries", "2",
+      "--fragment-retries", "2",
+      "--retry-sleep", "5",
+      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors", "--compat-options", "all",
+    ]
+    if (cookieFile) args.push("--cookies", cookieFile)
+    return args
+  }
+}
+
+// ============================================================
+// ERROR CLASSIFICATION
+// ============================================================
+
+function isYouTubeCriticalError(msg) {
+  const patterns = [
+    "did not get any data blocks",
     "unable to download video data",
-    "This video is unavailable",
-    "Video unavailable",
-    "This video has been removed",
-    "This video is private",
+    "this video is unavailable",
+    "video unavailable",
+    "this video has been removed",
+    "this video is private",
   ]
-  // REMOVIDO "no video formats found" - este erro e tratado pelo --ignore-no-formats-error
-  // e pelo sistema de fallback de formato
-  return criticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+  return patterns.some((p) => msg.toLowerCase().includes(p))
 }
 
-function isAuthenticationError(errorMessage) {
-  const authErrors = [
-    "requires authentication",
-    "requiring login",
-    "NSFW tweet",
-    "private video",
-    "private account",
-    "login required",
-    "sign in to confirm",
-    "cookies",
-    "Use --cookies",
-    "not a bot",
-    "captcha",
-    "verification",
-    "blocked",
-    "rate limit",
-    "requested content is not available",
-    "rate-limit reached",
-    "General metadata extraction failed",
-    "unable to extract shared data",
-    "The following content is not available on this app",
-    "Watch on the latest version of YouTube",
-    "Could not authenticate you", // Twitter/X API authentication error
-    "Error(s) while querying API", // Twitter/X API error
-  ]
-
-  return authErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+function isFormatNotAvailableError(msg) {
+  return msg.toLowerCase().includes("requested format is not available")
 }
 
-function isNonCriticalError(errorMessage) {
-  const nonCriticalErrors = [
-    "impersonation",
-    "impersonate target",
-    "subtitle",
-    "Unable to download video subtitles",
-    "HTTP Error 429",
-    "Too Many Requests",
-    "WARNING:",
-    "Deprecated Feature",
-    "deprecated",
-  ]
-
-  return nonCriticalErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+function isYouTubeEmptyFileError(msg) {
+  return ["did not get any data blocks", "no data blocks received", "failed to download any fragments",
+    "unable to download webpage", "file is too short"].some((p) => msg.toLowerCase().includes(p))
 }
 
-// 🎯 FUNCAO PARA DETECTAR ERRO DE FORMATO NAO DISPONIVEL
-function isFormatNotAvailableError(errorMessage) {
-  return errorMessage.toLowerCase().includes("requested format is not available")
+function isAuthenticationError(msg) {
+  return ["requires authentication", "requiring login", "nsfw tweet", "private video", "private account",
+    "login required", "sign in to confirm", "use --cookies", "not a bot", "captcha", "verification",
+    "blocked", "rate limit", "requested content is not available", "rate-limit reached",
+    "general metadata extraction failed", "unable to extract shared data",
+    "the following content is not available on this app", "watch on the latest version of youtube",
+    "could not authenticate you", "error(s) while querying api"].some((p) => msg.toLowerCase().includes(p))
 }
 
-// 🎯 FUNÇÃO PARA DETECTAR ERROS DE ARQUIVO VAZIO NO YOUTUBE
-function isYouTubeEmptyFileError(errorMessage) {
-  const emptyFileErrors = [
-    "did not get any data blocks", // Pode indicar arquivo vazio também
-    "no data blocks received",
-    "failed to download any fragments",
-    "unable to download webpage",
-    "File is too short", // Mais genérico, mas pode indicar falha
-  ]
-  return emptyFileErrors.some((error) => errorMessage.toLowerCase().includes(error.toLowerCase()))
+function isNonCriticalError(msg) {
+  return ["impersonation", "impersonate target", "subtitle", "unable to download video subtitles",
+    "http error 429", "too many requests", "warning:", "deprecated feature", "deprecated"].some((p) => msg.toLowerCase().includes(p))
 }
 
-// Classe para lidar com erros de arquivo vazio no YouTube com retries
-class YouTubeEmptyFileHandler {
-  static async handleEmptyFile(url, format, quality, userAgent, cookieFile, platform, outputPath) {
-    console.log("🎯 YouTube Empty File Handler: Iniciando retries...")
-    const maxRetries = 3
-    let retryCount = 0
-    let lastError = null
+// ============================================================
+// DURATION / FILENAME HELPERS
+// ============================================================
 
-    while (retryCount < maxRetries) {
-      retryCount++
-      console.log(`🎯 YouTube Empty File Handler: Tentativa ${retryCount}/${maxRetries}`)
+function parseDurationString(str) {
+  if (typeof str === "number") return str
+  const parts = String(str).split(":").reverse()
+  return (Number.parseInt(parts[0]) || 0) +
+    (Number.parseInt(parts[1]) || 0) * 60 +
+    (Number.parseInt(parts[2]) || 0) * 3600
+}
 
-      try {
-        // Na primeira tentativa, usar formato especifico
-        // Nas tentativas seguintes, usar formato simplificado "best"
-        const formatToUse = retryCount === 1 
-          ? getFormatSelector(format, quality, platform)
-          : getSimpleFormatSelector(format, quality)
-        
-        console.log(`🎯 Usando formato: ${formatToUse}`)
-        
-        // Recriar o comando com parâmetros mais robustos
-        const retryArgs = [
-          ...buildSecureCommand(userAgent, cookieFile, platform),
-          "-f",
-          formatToUse,
-          ...(format === "mp3" 
-            ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
-            : ["--merge-output-format", "mp4"]),
-          "--add-metadata",
-          "-o",
-          outputPath,
-          url,
-        ]
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60), s = seconds % 60
+    return s ? `${m}m ${s}s` : `${m}m`
+  }
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60)
+  return m ? `${h}h ${m}m` : `${h}h`
+}
 
-        // Tentar obter apenas o vídeo/áudio principal com mais retries
-        const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, retryArgs, {
-          timeout: 300000, // 5 minutos para download retry
-        })
+function checkDuration(duration) {
+  if (!duration || duration <= 0) return { allowed: true, duration_formatted: "unknown" }
+  const sec = typeof duration === "string" ? parseDurationString(duration) : duration
+  if (sec > MAX_DURATION) {
+    return { allowed: false, message: `Video too long. Max: ${formatDuration(MAX_DURATION)}, your video: ${formatDuration(sec)}`,
+      duration_formatted: formatDuration(sec), max_duration: formatDuration(MAX_DURATION) }
+  }
+  return { allowed: true, duration_formatted: formatDuration(sec) }
+}
 
-        if (downloadStderr) {
-          console.log("⚠️ stderror durante retry:", downloadStderr.substring(0, 100) + "...")
-          
-          // Se for erro de formato, continuar para proxima tentativa com formato simplificado
-          if (isFormatNotAvailableError(downloadStderr) && retryCount < maxRetries) {
-            console.log("⚠️ Formato nao disponivel, tentando formato simplificado na proxima tentativa...")
-            throw new Error("Formato nao disponivel, tentando fallback")
-          }
-          
-          if (isYouTubeCriticalError(downloadStderr)) {
-            throw new Error(`YouTube critical error during retry: ${downloadStderr}`)
-          }
+function sanitizeInput(input, maxLength = 100) {
+  if (typeof input !== "string") return ""
+  return input.trim().substring(0, maxLength).replace(/[<>"'&]/g, "").replace(/\0/g, "")
+}
+
+function generateSecureFilename(title, quality, format, uniqueId) {
+  const safe = (sanitizeInput(title, 50).replace(/[^\w\s\-_.()]/g, "").replace(/\s+/g, "_").replace(/_{2,}/g, "_").trim()) || "WaifuConvert"
+  const qualLabel = format === "mp3" ? `${quality || "best"}kbps` : `${quality || "best"}p`
+  return `${safe}-${qualLabel}-${uniqueId}.${format === "mp3" ? "mp3" : "mp4"}`
+}
+
+// ============================================================
+// VALIDATION
+// ============================================================
+
+function isValidUrl(url) {
+  try {
+    if (!validator.isURL(url, { protocols: ["http", "https"], require_protocol: true, require_valid_protocol: true,
+      allow_underscores: true, allow_trailing_dot: false, allow_protocol_relative_urls: false,
+      allow_fragments: true, allow_query_components: true })) return false
+
+    const hostname = new URL(url).hostname.toLowerCase()
+
+    const isAllowed = ALLOWED_DOMAINS.some((domain) => {
+      if (hostname === domain || hostname.endsWith("." + domain)) return true
+      if (domain === "tiktok.com" && (hostname.includes("tiktok") || hostname.includes("musically"))) return true
+      if (domain === "twitter.com" && (hostname.includes("twitter") || hostname.includes("x.com") || hostname.includes("twimg"))) return true
+      if (domain === "youtube.com" && (hostname.includes("youtube") || hostname.includes("youtu"))) return true
+      if (domain === "instagram.com" && (hostname.includes("instagram") || hostname.includes("cdninstagram"))) return true
+      return false
+    })
+    if (!isAllowed) { console.warn(`[VALIDATE] Blocked domain: ${hostname}`); return false }
+
+    const privateIp = [/^127\./, /^192\.168\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^0\.0\.0\.0$/, /^localhost$/i]
+    if (privateIp.some((r) => r.test(hostname))) { console.warn(`[VALIDATE] Private IP blocked: ${hostname}`); return false }
+
+    return true
+  } catch { return false }
+}
+
+function validateDownloadParams(url, format, quality) {
+  const errors = []
+  if (!url || typeof url !== "string") {
+    errors.push("Please provide a valid URL")
+  } else if (!isValidUrl(url)) {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase()
+      if (hostname.includes("localhost") || hostname.startsWith("127.") || hostname.startsWith("192.168.")) {
+        errors.push("Local URLs are not allowed")
+      } else {
+        errors.push("This site is not supported. Try: TikTok, Twitter/X, Instagram, YouTube, Reddit, Facebook, Twitch, SoundCloud, Vimeo")
+      }
+    } catch { errors.push("Invalid URL. Make sure to copy the full URL (including https://)") }
+  }
+
+  if (!format || !["mp3", "mp4"].includes(format)) errors.push("Choose MP3 (audio) or MP4 (video)")
+
+  if (quality) {
+    const q = Number.parseInt(quality)
+    if (format === "mp3" && (q < 64 || q > 320)) errors.push("Audio quality must be between 64 and 320 kbps")
+    else if (format === "mp4" && ![144, 240, 360, 480, 720, 1080].includes(q)) errors.push("Video quality must be 144p, 240p, 360p, 480p, 720p or 1080p")
+  }
+
+  return errors
+}
+
+// ============================================================
+// PLATFORM DETECTION
+// ============================================================
+
+function detectPlatform(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase()
+    if (h.includes("tiktok")) return "tiktok"
+    if (h.includes("twitter") || h.includes("x.com")) return "twitter"
+    if (h.includes("youtube") || h.includes("youtu.be")) return "youtube"
+    if (h.includes("instagram")) return "instagram"
+    if (h.includes("reddit")) return "reddit"
+    if (h.includes("facebook")) return "facebook"
+    return "unknown"
+  } catch { return "unknown" }
+}
+
+// ============================================================
+// FILE HELPERS
+// ============================================================
+
+// Finds the most recently modified matching file (used when yt-dlp
+// changes the output filename due to format negotiation)
+function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
+  try {
+    const recent = fs.readdirSync(baseDir)
+      .filter((f) => {
+        const mt = fs.statSync(path.join(baseDir, f)).mtime.getTime()
+        return Math.abs(mt - timestamp) < 300000 && extensions.some((e) => f.toLowerCase().endsWith(e))
+      })
+      .sort((a, b) => fs.statSync(path.join(baseDir, b)).mtime.getTime() - fs.statSync(path.join(baseDir, a)).mtime.getTime())
+
+    return recent.length ? path.join(baseDir, recent[0]) : null
+  } catch { return null }
+}
+
+function cleanupOldFiles() {
+  try {
+    const cutoff = Date.now() - 60 * 60 * 1000 // 1 hour
+    for (const file of fs.readdirSync(DOWNLOADS)) {
+      const filePath = path.join(DOWNLOADS, file)
+      if (fs.statSync(filePath).mtime.getTime() < cutoff) {
+        fs.unlinkSync(filePath)
+        console.log(`[CLEANUP] Deleted old file: ${file}`)
+        for (const [key, val] of fileMap.entries()) {
+          if (val.actualPath === filePath) { fileMap.delete(key); break }
         }
-
-        // Verificar o arquivo novamente após o retry
-        if (!fs.existsSync(outputPath)) {
-          // Tentar encontrar o arquivo mais recente se outputPath não foi gerado diretamente
-          const recentFilePath = findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
-          if (recentFilePath) {
-            console.log(`🎯 Arquivo encontrado via findRecentFile: ${path.basename(recentFilePath)}`)
-            const stats = fs.statSync(recentFilePath)
-            if (stats.size < 1000) {
-              throw new Error("Arquivo gerado no retry ainda está muito pequeno.")
-            }
-            return { success: true, filePath: recentFilePath, size: stats.size }
-          } else {
-            throw new Error("Arquivo ainda não foi criado após retry.")
-          }
-        } else {
-          const stats = fs.statSync(outputPath)
-          if (stats.size < 1000) {
-            throw new Error("Arquivo gerado no retry ainda está muito pequeno.")
-          }
-          return { success: true, filePath: outputPath, size: stats.size }
-        }
-      } catch (error) {
-        lastError = error
-        console.error(`❌ Erro no YouTube Empty File Handler (Tentativa ${retryCount}):`, error.message)
-        // Esperar um pouco antes da próxima tentativa
-        await new Promise((resolve) => setTimeout(resolve, 3000 * retryCount)) // Backoff exponencial
       }
     }
-
-    throw new Error(`Todas as tentativas de retry falharam. Último erro: ${lastError.message}`)
-  }
+  } catch (err) { console.error("[CLEANUP] Error cleaning files:", err.message) }
 }
 
-// 🎯 MELHORANDO EXTRAÇÃO DE INFORMAÇÕES DE VÍDEO SEM JSON
+// ============================================================
+// VIDEO INFO EXTRACTION
+// ============================================================
+
+// Light fallback when JSON extraction fails - gets just title and duration
 async function getVideoInfoWithoutJson(url, userAgent, cookieFile, platform) {
-  console.log(`[INFO_FALLBACK] Tentando extração sem JSON`)
-
+  console.log("[INFO] Attempting title/duration fallback extraction")
   const args = ["--user-agent", userAgent, "--js-runtimes", "node", "--no-playlist", "--get-title", "--get-duration"]
-
-  if (cookieFile && fs.existsSync(cookieFile)) {
-    args.push("--cookies", cookieFile)
-  }
-
+  if (cookieFile && fs.existsSync(cookieFile)) args.push("--cookies", cookieFile)
   args.push(url)
 
   try {
     const { stdout } = await executeSecureCommand(ytDlpPath, args, { timeout: 30000 })
-    const lines = stdout.split("\n").filter((line) => line.trim())
+    const lines = stdout.split("\n").filter((l) => l.trim())
+    if (lines.length >= 1) return { title: lines[0] || "Video", duration: lines[1] ? parseDurationString(lines[1]) : 0, filesize: null }
+  } catch (err) { console.warn("[INFO] Fallback extraction failed:", err.message) }
 
-    if (lines.length >= 1) {
-      return {
-        title: lines[0] || "Video",
-        duration: lines[1] ? parseDurationString(lines[1]) : 0,
-        filesize: null,
+  return { title: "Video", duration: 0, filesize: null }
+}
+
+// ============================================================
+// YOUTUBE RETRY HANDLER
+// Handles empty/corrupt files by retrying with progressively
+// simpler format selectors
+// ============================================================
+
+class YouTubeEmptyFileHandler {
+  static async handleEmptyFile(url, format, quality, userAgent, cookieFile, platform, outputPath) {
+    console.log("[YT-RETRY] Starting empty file retry handler")
+    const maxRetries = 3
+    let lastError = null
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`[YT-RETRY] Attempt ${attempt}/${maxRetries}`)
+      try {
+        const formatToUse = attempt === 1 ? getFormatSelector(format, quality, platform) : getSimpleFormatSelector(format, quality)
+        const q = Number.parseInt(quality || "128")
+
+        const retryArgs = [
+          ...buildSecureCommand(userAgent, cookieFile, platform),
+          "-f", formatToUse,
+          ...(format === "mp3"
+            ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`]
+            : ["--merge-output-format", "mp4"]),
+          "--add-metadata",
+          "-o", outputPath,
+          url,
+        ]
+
+        const { stderr } = await executeSecureCommand(ytDlpPath, retryArgs, { timeout: 300000 })
+
+        if (stderr && isFormatNotAvailableError(stderr) && attempt < maxRetries) throw new Error("Format not available - trying simpler fallback")
+        if (stderr && isYouTubeCriticalError(stderr)) throw new Error(`Critical error: ${stderr}`)
+
+        // Verify output file
+        if (!fs.existsSync(outputPath)) {
+          const found = findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
+          if (!found) throw new Error("Output file not created after retry")
+          const stats = fs.statSync(found)
+          if (stats.size < 1000) throw new Error("Output file is too small after retry")
+          return { success: true, filePath: found, size: stats.size }
+        }
+
+        const stats = fs.statSync(outputPath)
+        if (stats.size < 1000) throw new Error("Output file is too small after retry")
+        return { success: true, filePath: outputPath, size: stats.size }
+      } catch (err) {
+        lastError = err
+        console.warn(`[YT-RETRY] Attempt ${attempt} failed: ${err.message}`)
+        await new Promise((r) => setTimeout(r, 3000 * attempt))
       }
     }
-  } catch (e) {
-    console.log(`[INFO_FALLBACK_FAILED] ${e.message}`)
-  }
 
-  return {
-    title: "Video",
-    duration: 0,
-    filesize: null,
+    throw new Error(`All retry attempts failed. Last error: ${lastError.message}`)
   }
 }
 
-// 🎯 FUNÇÃO PARA TENTAR MÚLTIPLAS ESTRATÉGIAS DE DOWNLOAD (PARA YOUTUBE)
+// ============================================================
+// YOUTUBE MULTI-STRATEGY DOWNLOAD
+// Tries 3 bypass strategies in sequence before giving up.
+// Strategy 1: cookies + headers; Strategy 2: no cookies; Strategy 3: compat mode
+// ============================================================
+
 async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
-  // Estratégias otimizadas para economia e compatibilidade
   const strategies = [
-    { name: "Estratégia 1: Cookies + Headers Otimizados", useStrategy: 1, timeout: 45000 },
-    { name: "Estratégia 2: Sem Cookies + Bypass", useStrategy: 2, timeout: 30000 },
-    { name: "Estratégia 3: Modo Compatibilidade + Retries", useStrategy: 3, timeout: 60000 },
+    { name: "Strategy 1: Cookies + Optimized Headers", fn: YouTubeBypassStrategies.strategy1, useCookie: true, timeout: 45000 },
+    { name: "Strategy 2: No Cookies + Bypass", fn: YouTubeBypassStrategies.strategy2, useCookie: false, timeout: 30000 },
+    { name: "Strategy 3: Compat Mode + Retries", fn: YouTubeBypassStrategies.strategy3, useCookie: true, timeout: 60000 },
   ]
 
   let lastError = null
 
   for (const strategy of strategies) {
     try {
-      console.log(`🎯 YouTube: Tentando ${strategy.name}`)
+      console.log(`[YT] Trying ${strategy.name}`)
+      const cookieFile = strategy.useCookie ? getSmartCookie("youtube") : null
+      const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+      const baseArgs = strategy.useCookie ? strategy.fn(userAgent, cookieFile) : strategy.fn(userAgent)
 
-      const cookieFile = strategy.useStrategy === 2 ? null : getSmartCookie("youtube")
-      const randomUA = getRandomUserAgent()
-
-      console.log(`🍪 Cookie info para ${strategy.name}:`, {
-        cookieFile: cookieFile ? path.basename(cookieFile) : "SEM COOKIES",
-        exists: cookieFile ? fs.existsSync(cookieFile) : false,
-      })
-
-      let baseArgs
-      switch (strategy.useStrategy) {
-        case 1:
-          baseArgs = YouTubeBypassStrategies.getStrategy1Args(randomUA, cookieFile)
-          break
-        case 2:
-          baseArgs = YouTubeBypassStrategies.getStrategy2Args(randomUA)
-          break
-        case 3:
-          baseArgs = YouTubeBypassStrategies.getStrategy3Args(randomUA, cookieFile)
-          break
-      }
-
-      // Primeiro, tentar obter informações (metadata)
-      const jsonArgs = [...baseArgs, "-j", url]
+      // Get metadata first
       let data = null
-
       try {
-        const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
-          timeout: strategy.timeout,
-        })
-        const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
-        if (!jsonLine) {
-          // Se falhar ao obter JSON, tentar obter informações básicas
-          console.log("⚠️ JSON não obtido, tentando obter título/duração...")
-          data = await getVideoInfoWithoutJson(url, randomUA, cookieFile, "youtube")
-          if (!data.title || data.title === "Video") {
-            throw new Error("Não foi possível extrair título ou duração mesmo com fallback.")
-          }
-        } else {
-          data = JSON.parse(jsonLine)
-          console.log(`[JSON_PARSED] Título: ${data.title?.substring(0, 60)}`)
-        }
+        const { stdout } = await executeSecureCommand(ytDlpPath, [...baseArgs, "-j", url], { timeout: strategy.timeout })
+        const jsonLine = stdout.split("\n").find((l) => l.trim().startsWith("{"))
+        data = jsonLine ? JSON.parse(jsonLine) : await getVideoInfoWithoutJson(url, userAgent, cookieFile, "youtube")
+        if (!data?.title || data.title === "Video") throw new Error("Could not extract video title")
+        console.log(`[YT] Metadata OK: ${data.title?.substring(0, 60)}`)
       } catch (e) {
-        console.log(`Erro ao obter JSON/metadata: ${e.message}. Tentando fallback...`)
-        data = await getVideoInfoWithoutJson(url, randomUA, cookieFile, "youtube")
-        if (!data.title || data.title === "Video") {
-          throw new Error("Não foi possível extrair título ou duração mesmo com fallback.")
-        }
+        data = await getVideoInfoWithoutJson(url, userAgent, cookieFile, "youtube")
+        if (!data?.title || data.title === "Video") throw new Error("Could not extract video metadata even with fallback")
       }
 
-      // Verificar duração (agora com limite de 1 hora para economia)
       const durationCheck = checkDuration(data.duration)
-      if (!durationCheck.allowed) {
-        throw new Error(durationCheck.message)
-      }
+      if (!durationCheck.allowed) throw new Error(durationCheck.message)
 
-      // Preparar download
       const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
       const outputPath = path.join(DOWNLOADS, safeTitle)
+      const q = Number.parseInt(quality || "128")
 
-      let downloadArgs
-      if (format === "mp3") {
-        const q = Number.parseInt(quality || "128")
-        const formatSelector = getFormatSelector("mp3", quality, "youtube")
-        downloadArgs = [
-          ...baseArgs,
-          "-f",
-          formatSelector,
-          "--extract-audio",
-          "--audio-format",
-          "mp3",
-          "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
-          "--add-metadata",
-          "--embed-thumbnail",
-          "-o",
-          outputPath,
-          url,
-        ]
-      } else {
-        const formatSelector = getFormatSelector("mp4", quality, "youtube")
-        downloadArgs = [
-          ...baseArgs,
-          "-f",
-          formatSelector,
-          "--merge-output-format",
-          "mp4",
-          "--add-metadata",
-          "-o",
-          outputPath,
-          url,
-        ]
-      }
+      const downloadArgs = format === "mp3"
+        ? [...baseArgs, "-f", getFormatSelector("mp3", quality, "youtube"), "--extract-audio", "--audio-format", "mp3",
+            "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`, "--add-metadata", "--embed-thumbnail", "-o", outputPath, url]
+        : [...baseArgs, "-f", getFormatSelector("mp4", quality, "youtube"), "--merge-output-format", "mp4", "--add-metadata", "-o", outputPath, url]
 
-      console.log(`🚀 YouTube: Executando download com ${strategy.name}`)
-      const { stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-        timeout: 300000, // 5 minutos para download
-      })
+      const { stderr } = await executeSecureCommand(ytDlpPath, downloadArgs, { timeout: 300000 })
 
-      if (downloadStderr) {
-        // 🎯 Verificar erro de formato primeiro - nao e critico, pode tentar fallback
-        if (isFormatNotAvailableError(downloadStderr)) {
-          console.log("⚠️ Formato nao disponivel, tentando fallback com 'best'...")
-          
-          // Tentar com formato simplificado
-          const fallbackArgs = [
-            ...baseArgs,
-            "-f",
-            getSimpleFormatSelector(format, quality),
-            ...(format === "mp3" 
-              ? ["--extract-audio", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
-              : ["--merge-output-format", "mp4"]),
-            "--add-metadata",
-            "-o",
-            outputPath,
-            url,
-          ]
-          
-          const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
-            timeout: 300000,
-          })
-          
-          if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
-            throw new Error(`YouTube Critical Error after fallback: ${fallbackStderr.substring(0, 300)}`)
-          }
-          
-          console.log("✅ Download com formato fallback bem-sucedido!")
-          // Continuar para verificar arquivo
-        } else if (isYouTubeCriticalError(downloadStderr)) {
-          console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
-          throw new Error(`YouTube Critical Error: ${downloadStderr.substring(0, 300)}`)
-        } else if (isNonCriticalError(downloadStderr)) {
-          console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
-        } else if (isYouTubeEmptyFileError(downloadStderr)) {
-          // Tratar erro de arquivo vazio especificamente para YouTube
-          throw new Error(`YouTube Empty File Error: ${downloadStderr.substring(0, 300)}`)
+      if (stderr) {
+        if (isFormatNotAvailableError(stderr)) {
+          // Try simpler format selector as immediate fallback
+          const fallbackArgs = [...baseArgs, "-f", getSimpleFormatSelector(format, quality),
+            ...(format === "mp3" ? ["--extract-audio", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`] : ["--merge-output-format", "mp4"]),
+            "--add-metadata", "-o", outputPath, url]
+          const { stderr: fbStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, { timeout: 300000 })
+          if (fbStderr && isYouTubeCriticalError(fbStderr)) throw new Error(`Critical error in fallback: ${fbStderr.substring(0, 300)}`)
+          console.log("[YT] Format fallback succeeded")
+        } else if (isYouTubeCriticalError(stderr)) {
+          throw new Error(`YouTube critical error: ${stderr.substring(0, 300)}`)
+        } else if (!isNonCriticalError(stderr)) {
+          console.warn("[YT] Non-classified stderr:", stderr.substring(0, 100))
         }
       }
 
-      // Verificar se arquivo foi criado e não está vazio
-      let finalFilePath = outputPath
-      if (!fs.existsSync(finalFilePath)) {
-        finalFilePath = findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
-        if (!finalFilePath) {
-          throw new Error("Arquivo não foi criado após download bem-sucedido")
-        }
-      }
+      const finalPath = fs.existsSync(outputPath) ? outputPath : findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
+      if (!finalPath) throw new Error("Output file not found after download")
+      if (fs.statSync(finalPath).size < 1000) throw new Error("Output file is too small (likely corrupt)")
 
-      const stats = fs.statSync(finalFilePath)
-      if (stats.size < 1000) {
-        throw new Error("Arquivo gerado está corrompido ou vazio")
-      }
-
-      console.log(`✅ YouTube: Sucesso com ${strategy.name}!`)
-      return {
-        success: true,
-        data,
-        finalFilePath,
-        stats,
-        durationCheck,
-        strategy: strategy.name,
-      }
-    } catch (error) {
-      lastError = error
-      console.log(`❌ YouTube: ${strategy.name} falhou: ${error.message}`)
-
-      if (isYouTubeCriticalError(error.message)) {
-        console.log(`🚨 Erro crítico do YouTube detectado: ${error.message.substring(0, 100)}`)
-      } else if (isYouTubeEmptyFileError(error.message)) {
-        console.log(`🎯 Erro de arquivo vazio do YouTube detectado.`)
-      }
-
-      // Se for o último método, lançar erro
-      if (strategy === strategies[strategies.length - 1]) {
-        let errorMsg = lastError.message
-        if (isYouTubeCriticalError(errorMsg) || isYouTubeEmptyFileError(errorMsg)) {
-          errorMsg =
-            "YouTube bloqueou o download ou o vídeo está indisponível. Verifique os cookies ou tente outro vídeo."
-        }
-
-        throw new Error(`Todas as estratégias do YouTube falharam. Erro: ${errorMsg}`)
-      }
-
-      // Aguardar antes da próxima tentativa
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      console.log(`[YT] Success with ${strategy.name}`)
+      return { success: true, data, finalFilePath: finalPath, stats: fs.statSync(finalPath), durationCheck, strategy: strategy.name }
+    } catch (err) {
+      lastError = err
+      console.warn(`[YT] ${strategy.name} failed: ${err.message}`)
+      if (strategy !== strategies[strategies.length - 1]) await new Promise((r) => setTimeout(r, 2000))
     }
   }
+
+  throw new Error(`All YouTube strategies failed. Last error: ${lastError.message}`)
 }
 
-const fileMap = new Map()
+// ============================================================
+// EXPRESS MIDDLEWARE & SECURITY
+// ============================================================
 
-function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
-  try {
-    const files = fs.readdirSync(baseDir)
-    const recentFiles = files.filter((file) => {
-      const filePath = path.join(baseDir, file)
-      const stats = fs.statSync(filePath)
-      // Usar mtime (tempo de modificação) como critério principal para arquivos baixados
-      const fileTime = stats.mtime.getTime()
-      const timeDiff = Math.abs(fileTime - timestamp)
+app.use(helmet({
+  contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", "data:", "https:"] } },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+}))
 
-      return timeDiff < 300000 && extensions.some((ext) => file.toLowerCase().endsWith(ext))
-    })
+app.use(cors({
+  origin: ["http://localhost:3000", "http://127.0.0.1:3000", "https://www.waifuconvert.com", "https://waifuconvert.com", "https://waifuconvert.vercel.app"],
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+  exposedHeaders: ["Content-Length", "Content-Type"],
+  preflightContinue: false,
+}))
 
-    if (recentFiles.length > 0) {
-      recentFiles.sort((a, b) => {
-        const aTime = fs.statSync(path.join(baseDir, a)).mtime.getTime()
-        const bTime = fs.statSync(path.join(baseDir, b)).mtime.getTime()
-        return bTime - aTime
-      })
-      return path.join(baseDir, recentFiles[0])
-    }
-  } catch (error) {
-    console.error("❌ Erro ao procurar arquivo:", error)
-  }
-  return null
-}
+// Explicit OPTIONS handler to guarantee CORS preflight always responds
+app.options("*", (req, res) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin || "*")
+  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Content-Length, X-Requested-With, Accept, Origin")
+  res.header("Access-Control-Allow-Credentials", "true")
+  res.sendStatus(200)
+})
 
-function cleanupOldFiles() {
-  try {
-    const files = fs.readdirSync(DOWNLOADS)
-    const oneHourAgo = Date.now() - 60 * 60 * 1000 // Arquivos com mais de 1 hora
+const downloadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 20,
+  message: { error: "Too many download attempts. Please try again in a few minutes.", type: "rate_limit_exceeded" },
+  standardHeaders: true, legacyHeaders: false,
+})
 
-    files.forEach((file) => {
-      const filePath = path.join(DOWNLOADS, file)
-      const stats = fs.statSync(filePath)
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 60,
+  message: { error: "Too many requests. Please try again in 1 minute.", type: "rate_limit_exceeded" },
+})
 
-      if (stats.mtime.getTime() < oneHourAgo) {
-        fs.unlinkSync(filePath)
-        console.log("🗑️ Arquivo antigo removido:", file)
+app.use(generalLimiter)
+app.use("/download", downloadLimiter)
 
-        for (const [key, value] of fileMap.entries()) {
-          if (value.actualPath === filePath) {
-            fileMap.delete(key)
-            break
-          }
-        }
-      }
-    })
-  } catch (error) {
-    console.error("❌ Erro ao limpar arquivos:", error.message)
-  }
-}
+// Track last activity time and update ResourceEconomizer
+app.use((req, res, next) => {
+  lastActivity = Date.now()
+  console.log(`[REQ] ${req.method} ${req.path} from ${req.headers.origin || "unknown"}`)
+  next()
+})
 
+// Parse JSON body with size limit
 app.use((req, res, next) => {
   express.json({ limit: "10mb" })(req, res, (err) => {
-    if (err) {
-      console.error("❌ [JSON PARSE ERROR]:", err.message)
-      return res.status(400).json({ error: "JSON invalido no body da requisicao" })
-    }
+    if (err) { console.error("[JSON] Parse error:", err.message); return res.status(400).json({ error: "Invalid JSON in request body" }) }
     next()
   })
 })
 
-if (!fs.existsSync(DOWNLOADS)) {
-  fs.mkdirSync(DOWNLOADS, { recursive: true, mode: 0o755 })
+// Ensure required directories exist
+if (!fs.existsSync(DOWNLOADS)) fs.mkdirSync(DOWNLOADS, { recursive: true, mode: 0o755 })
+if (!fs.existsSync(COOKIES_DIR)) fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
+
+// ============================================================
+// HELPER: Save completed file to fileMap and respond to client
+// ============================================================
+
+function respondWithFile(res, filePath, data, format, quality, platform, extra = {}) {
+  const ext = format === "mp3" ? "mp3" : "mp4"
+  const qualLabel = format === "mp3" ? `${quality}kbps` : `${quality}p`
+  const friendlyName = `${data.title.substring(0, 50)} - ${qualLabel}.${ext}`
+  const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${ext}`
+  const stats = fs.statSync(filePath)
+
+  fileMap.set(downloadKey, { actualPath: filePath, actualFilename: path.basename(filePath), userFriendlyName: friendlyName, size: stats.size, created: Date.now() })
+
+  // Log what each user downloaded for monitoring
+  console.log(`[DOWNLOAD] Complete - platform: ${platform}, format: ${format}, quality: ${quality}, size: ${(stats.size / 1024 / 1024).toFixed(2)}MB, title: "${data.title?.substring(0, 60)}"`)
+
+  runMemoryCleanup()
+
+  return res.json({
+    file: `/downloads/${downloadKey}`,
+    filename: friendlyName,
+    size: stats.size,
+    title: data.title,
+    duration: data.duration,
+    platform,
+    quality_achieved: qualLabel,
+    ...extra,
+  })
 }
 
-if (!fs.existsSync(COOKIES_DIR)) {
-  fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 })
-}
+// ============================================================
+// MAIN DOWNLOAD ROUTE
+// ============================================================
 
-// 🛡️ ROTA PRINCIPAL OTIMIZADA COM CORREÇÃO YOUTUBE - SEM SLEEP MODE
 app.post("/download", async (req, res) => {
   const startTime = Date.now()
   let downloadStarted = false
 
   try {
-    console.log(`🌐 POST /download - CORS OK`)
-    console.log(`[DEBUG] Body recebido:`, JSON.stringify(req.body || {}).substring(0, 200))
-
-    // REMOVIDO: economy mode bloqueava requisicoes apos 10 min de inatividade
-    // Isso causava o backend "morrer" silenciosamente para o usuario
-    resourceEconomizer.updateActivity()
+    console.log(`[DOWNLOAD] New request - body: ${JSON.stringify(req.body || {}).substring(0, 200)}`)
 
     if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
       return res.status(429).json({
-        error: "Servidor ocupado no momento. Tente novamente em alguns minutos.",
+        error: "Server is busy. Please try again in a few minutes.",
         type: "server_busy",
-        tip: "Muitas pessoas estão usando o serviço agora. 😊",
-        queue_info: `${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS} downloads ativos`,
+        queue_info: `${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS} active downloads`,
       })
     }
 
     const { url, format, quality } = req.body
-
     const validationErrors = validateDownloadParams(url, format, quality)
-    if (validationErrors.length > 0) {
-      return res.status(400).json({
-        error: "Parâmetros inválidos",
-        details: validationErrors,
-      })
-    }
+    if (validationErrors.length > 0) return res.status(400).json({ error: "Invalid parameters", details: validationErrors })
 
     activeDownloads++
     downloadStarted = true
-    console.log(`🚀 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+    console.log(`[DOWNLOAD] Active downloads: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
-    // Limpeza preventiva de memória antes do download
-    if (activeDownloads === 1) {
-      ultraAggressiveMemoryCleanup()
-    }
+    if (activeDownloads === 1) runMemoryCleanup()
 
-    const detectedPlatform = detectPlatform(url)
-    const cookieFile = getSmartCookie(detectedPlatform)
-    const randomUA = getRandomUserAgent()
+    const platform = detectPlatform(url)
+    const cookieFile = getSmartCookie(platform)
+    const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
     const uniqueId = crypto.randomBytes(8).toString("hex")
 
-    console.log("🎯 Nova requisição:", {
-      url: url.substring(0, 50) + "...",
-      format,
-      quality,
-      platform: detectedPlatform,
-    })
+    console.log(`[DOWNLOAD] Platform: ${platform}, Format: ${format}, Quality: ${quality}, Cookie: ${cookieFile ? path.basename(cookieFile) : "none"}`)
 
-    console.log("🍪 Cookie info:", {
-      platform: detectedPlatform,
-      cookieFile: cookieFile ? path.basename(cookieFile) : "NENHUM",
-      cookieExists: cookieFile ? fs.existsSync(cookieFile) : false,
-    })
-
-    // Tentar obter metadata primeiro para validar e obter informacoes
-    // Para YouTube: usar comando minimalista para evitar erros de formato
-    let jsonArgs
-    if (detectedPlatform === "youtube") {
-      // YouTube: Comando MINIMO para metadata - sem verificacao de formato
-      jsonArgs = [
-        "--user-agent", randomUA,
-        "--js-runtimes", "node",
-        "--no-playlist",
-        "--no-warnings",
-        "--ignore-errors",
-        "--ignore-no-formats-error",  // CRITICO: ignora erros de formato
-        "--skip-download",
-        "--dump-single-json",  // Usar dump-single-json ao inves de -j
-        "--flat-playlist",  // Nao expande playlists
-      ]
-      if (cookieFile) {
-        jsonArgs.push("--cookies", cookieFile)
+    // --- YouTube: use dedicated multi-strategy handler ---
+    if (platform === "youtube") {
+      try {
+        const result = await tryYouTubeDownloadStrategies(url, format, quality, uniqueId)
+        return respondWithFile(res, result.finalFilePath, result.data, format, quality, platform, { strategy_used: result.strategy })
+      } catch (err) {
+        console.error("[DOWNLOAD] YouTube all strategies failed:", err.message)
+        return res.status(500).json({
+          error: "Could not download this YouTube video. Please try again later or try a different video.",
+          type: "youtube_error",
+          suggestions: ["Wait a few minutes and try again", "Try a different quality setting", "Try downloading as MP3 instead"],
+        })
       }
-      jsonArgs.push(url)
-    } else {
-      jsonArgs = [...buildSecureCommand(randomUA, cookieFile, detectedPlatform), "-j", "--skip-download", url]
     }
 
-    console.log(`[YT_DLP_JSON] Executando: yt-dlp com ${jsonArgs.length} argumentos`)
+    // --- Other platforms ---
 
+    // Get metadata
+    const jsonArgs = [...buildSecureCommand(userAgent, cookieFile, platform), "-j", "--skip-download", url]
     let data
     try {
-      const { stdout: jsonStdout, stderr: jsonStderr } = await executeSecureCommand(ytDlpPath, jsonArgs, {
-        timeout: 30000, // REDUZIDO: 30 segundos para metadata
-      })
+      const { stdout } = await executeSecureCommand(ytDlpPath, jsonArgs, { timeout: 30000 })
+      const jsonLine = stdout.split("\n").find((l) => l.trim().startsWith("{"))
+      data = jsonLine ? JSON.parse(jsonLine) : await getVideoInfoWithoutJson(url, userAgent, cookieFile, platform)
+    } catch {
+      data = await getVideoInfoWithoutJson(url, userAgent, cookieFile, platform)
+    }
 
-      console.log(`[JSON_RESPONSE] Recebido ${jsonStdout.length} bytes`)
+    const durationCheck = checkDuration(data.duration)
+    if (!durationCheck.allowed) {
+      return res.status(400).json({ error: durationCheck.message, type: "duration_exceeded",
+        video_duration: durationCheck.duration_formatted, max_duration: durationCheck.max_duration })
+    }
 
-      try {
-        const jsonLine = jsonStdout.split("\n").find((line) => line.trim().startsWith("{"))
-        if (!jsonLine) {
-          console.log(`[JSON_ERROR] JSON não encontrado, usando fallback`)
-          data = await getVideoInfoWithoutJson(url, randomUA, cookieFile, detectedPlatform)
-        } else {
-          data = JSON.parse(jsonLine)
-          console.log(`[JSON_PARSED] Título: ${data.title?.substring(0, 60)}`)
-        }
-      } catch (e) {
-        console.log(`[JSON_PARSE_ERROR] ${e.message}, usando fallback`)
-        data = await getVideoInfoWithoutJson(url, randomUA, cookieFile, detectedPlatform)
-      }
+    if (data.filesize && data.filesize > MAX_FILE_SIZE) {
+      return res.status(400).json({ error: "File too large. Maximum allowed: 512MB", type: "file_too_large" })
+    }
 
-      const durationCheck = checkDuration(data.duration)
-      if (!durationCheck.allowed) {
-        console.log("🚫 Vídeo rejeitado por duração:", durationCheck.message)
-        return res.status(400).json({
-          error: durationCheck.message,
-          type: "duration_exceeded",
-          video_duration: durationCheck.duration_formatted,
-          max_duration: durationCheck.max_duration,
-          suggestion: "Tente um vídeo mais curto (máximo 1 hora para economia)",
-        })
-      }
+    const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
+    const outputPath = path.join(DOWNLOADS, safeTitle)
+    const q = Number.parseInt(quality || "128")
 
-      if (data.filesize && data.filesize > MAX_FILE_SIZE) {
-        return res.status(400).json({
-          error: "Arquivo muito grande. Máximo permitido: 512MB",
-          type: "file_too_large",
-        })
-      }
+    const downloadArgs = format === "mp3"
+      ? [...buildSecureCommand(userAgent, cookieFile, platform), "-f", "bestaudio/best", "-x", "--audio-format", "mp3",
+          "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`, "-o", outputPath, url]
+      : [...buildSecureCommand(userAgent, cookieFile, platform), "-f", getFormatSelector("mp4", quality, platform),
+          "--merge-output-format", "mp4", "-o", outputPath, url]
 
-      const safeTitle = generateSecureFilename(data.title, quality, format, uniqueId)
-      const outputPath = path.join(DOWNLOADS, safeTitle)
+    console.log("[DOWNLOAD] Starting download...")
+    const { stderr } = await executeSecureCommand(ytDlpPath, downloadArgs, { timeout: 300000 })
 
-      console.log("📁 Arquivo aprovado:", {
-        title: data.title.substring(0, 30) + "...",
-        duration: durationCheck.duration_formatted,
-        filename: safeTitle,
-      })
-
-      let downloadArgs
-      
-      // YOUTUBE: Usar comandos especificos que SEMPRE funcionam
-      if (detectedPlatform === "youtube") {
-        if (format === "mp3") {
-          const q = Number.parseInt(quality || "128")
-          // YouTube MP3: Extrair audio sem especificar formato de origem
-          downloadArgs = [
-            "--user-agent", randomUA,
-            "--js-runtimes", "node",
-            "--no-playlist",
-            "--no-warnings",
-            "--ignore-errors",
-            "--ignore-no-formats-error",
-            "-f", "bestaudio/best",
-            "-x",
-            "--audio-format", "mp3",
-            // Usar postprocessor-args para forcar bitrate fixo via ffmpeg
-            "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
-            "-o", outputPath,
-          ]
-          if (cookieFile) {
-            downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
-          }
-          downloadArgs.push(url)
-        } else {
-          // YouTube MP4: Respeitar qualidade solicitada com H.264 e fallbacks progressivos
-          const videoFormatSelector = getFormatSelector(format, quality, "youtube")
-          downloadArgs = [
-            "--user-agent", randomUA,
-            "--js-runtimes", "node",
-            "--no-playlist",
-            "--no-warnings",
-            "--ignore-errors",
-            "--ignore-no-formats-error",
-            "-f", videoFormatSelector,
-            "--merge-output-format", "mp4",
-            "-o", outputPath,
-          ]
-          if (cookieFile) {
-            downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
-          }
-          downloadArgs.push(url)
-        }
-      } else if (format === "mp3") {
-        // Outras plataformas - MP3 com bitrate fixo via ffmpeg
-        const q = Number.parseInt(quality || "128")
-        downloadArgs = [
-          ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-          "-f", "bestaudio/best",
-          "-x",
-          "--audio-format", "mp3",
-          // Forcar bitrate fixo via ffmpeg (--audio-quality sozinho nao garante o bitrate)
-          "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
-          "-o", outputPath,
-          url,
-        ]
-      } else {
-        // Outras plataformas - MP4 com qualidade solicitada
-        const videoFormatSelector = getFormatSelector(format, quality, detectedPlatform)
-        downloadArgs = [
-          ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-          "-f", videoFormatSelector,
-          "--merge-output-format", "mp4",
-          "-o", outputPath,
-          url,
-        ]
-      }
-
-      console.log("🚀 Iniciando download...")
-
-      try {
-        const { stdout: downloadStdout, stderr: downloadStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-          timeout: 300000, // 5 minutos para download
-        })
-
-        if (downloadStderr) {
-          // 🎯 NOVO: Verificar erro de formato nao disponivel e tentar fallback
-          if (isFormatNotAvailableError(downloadStderr) && detectedPlatform === "youtube") {
-            console.log("⚠️ Formato nao disponivel - tentando com formato simplificado...")
-            
-            // Tentar novamente com formato simplificado "best"
-            const fallbackArgs = [
-              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-              "-f",
-              getSimpleFormatSelector(format, quality),
-              ...(format === "mp3"
-                ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
-                : ["--merge-output-format", "mp4"]),
-              "-o",
-              outputPath,
-              url,
-            ]
-            
-            try {
-              const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
-                timeout: 300000,
-              })
-              
-              if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
-                throw new Error(fallbackStderr)
-              }
-              
-              console.log("✅ Download com formato fallback bem-sucedido!")
-              // Continuar com o fluxo normal de verificacao do arquivo
-            } catch (fallbackError) {
-              console.error("❌ Fallback tambem falhou:", fallbackError.message)
-              return res.status(500).json({
-                error: "YouTube: Formato de video nao disponivel para este video",
-                type: "youtube_format_error",
-                details: "Nenhum formato compativel foi encontrado",
-                suggestions: [
-                  "Tente uma qualidade diferente (ex: 720p ao inves de 1080p)",
-                  "Tente baixar apenas o audio (MP3)",
-                  "Alguns videos tem formatos limitados pelo criador",
-                ],
-              })
-            }
-          } else if (isYouTubeCriticalError(downloadStderr)) {
-            console.error("❌ Erro CRÍTICO do YouTube detectado:", downloadStderr.substring(0, 200))
-            return res.status(500).json({
-              error: "YouTube: Não foi possível baixar este vídeo",
-              type: "youtube_critical_error",
-              details: "O YouTube bloqueou o download ou o vídeo está indisponível",
-              possible_causes: [
-                "Cookies do YouTube expiraram",
-                "YouTube detectou acesso automatizado",
-                "Vídeo com restrições de região",
-                "Formato de vídeo não disponível",
-              ],
-              suggestions: [
-                "Aguarde alguns minutos e tente novamente",
-                "Tente outro vídeo do YouTube",
-                "Verifique se o vídeo está disponível publicamente",
-              ],
-            })
-          } else if (isNonCriticalError(downloadStderr)) {
-            console.log("⚠️ Avisos não críticos ignorados:", downloadStderr.substring(0, 100) + "...")
-          }
-        }
-
-        let finalFilePath = outputPath
-        if (!fs.existsSync(finalFilePath)) {
-          finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
-          if (!finalFilePath) {
-            return res.status(500).json({ error: "Arquivo não foi criado após download bem-sucedido" })
-          }
-        }
-
-        const actualFilename = path.basename(finalFilePath)
-        const stats = fs.statSync(finalFilePath)
-
-        // 🎯 CORREÇÃO YOUTUBE: Verificar arquivo vazio e tentar estratégias de retry
-        if (stats.size < 1000) {
-          console.log(`⚠️ Arquivo muito pequeno detectado: ${stats.size} bytes`)
-
-          if (detectedPlatform === "youtube") {
-            console.log("🎯 YouTube arquivo vazio - iniciando sistema de retry...")
-
-            try {
-              // Deletar arquivo vazio
-              if (fs.existsSync(finalFilePath)) {
-                fs.unlinkSync(finalFilePath)
-              }
-
-              // Tentar estratégias de retry para YouTube
-              const retryResult = await YouTubeEmptyFileHandler.handleEmptyFile(
-                url,
-                format,
-                quality,
-                randomUA,
-                cookieFile,
-                detectedPlatform,
-                outputPath,
-              )
-
-              if (retryResult.success) {
-                console.log("✅ YouTube retry bem-sucedido!")
-                finalFilePath = retryResult.filePath
-                const newStats = fs.statSync(finalFilePath)
-
-                const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-                fileMap.set(downloadKey, {
-                  actualPath: finalFilePath,
-                  actualFilename: path.basename(finalFilePath),
-                  userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: newStats.size,
-                  created: Date.now(),
-                })
-
-                // Limpeza de memória após download
-                ultraAggressiveMemoryCleanup()
-
-                console.log("✅ Download YouTube corrigido:", {
-                  platform: detectedPlatform,
-                  downloadKey: downloadKey,
-                  size: `${(newStats.size / 1024 / 1024).toFixed(2)} MB`,
-                  duration: durationCheck.duration_formatted,
-                  retry_success: true,
-                })
-
-                return res.json({
-                  file: `/downloads/${downloadKey}`,
-                  filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: newStats.size,
-                  title: data.title,
-                  duration: data.duration,
-                  duration_formatted: durationCheck.duration_formatted,
-                  platform: detectedPlatform,
-                  quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-                  used_cookies: !!cookieFile,
-                  economy_mode: resourceEconomizer.isEconomyMode, // Assumindo que existe essa variável
-                  youtube_retry_applied: true,
-                  retry_success: true,
-                })
-              }
-            } catch (retryError) {
-              console.error("❌ Todas as tentativas de retry falharam:", retryError.message)
-              return res.status(500).json({
-                error: "YouTube: Arquivo vazio mesmo após múltiplas tentativas. Tente outro vídeo.",
-                type: "youtube_empty_file",
-                suggestion: "Este vídeo específico está com problemas. Tente outro vídeo do YouTube.",
-                technical_details: retryError.message.substring(0, 200),
-              })
-            }
-          } else {
-            // Para outras plataformas, retornar erro normal
-            return res.status(500).json({ error: "Arquivo gerado está corrompido ou vazio" })
-          }
-        }
-
-        const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-        fileMap.set(downloadKey, {
-          actualPath: finalFilePath,
-          actualFilename: actualFilename,
-          userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-          size: stats.size,
-          created: Date.now(),
-        })
-
-        // Limpeza de memória após download
-        ultraAggressiveMemoryCleanup()
-
-        console.log("✅ Download concluído:", {
-          platform: detectedPlatform,
-          downloadKey: downloadKey,
-          size: `${(stats.size / 1024 / 1024).toFixed(2)} MB`,
-          duration: durationCheck.duration_formatted,
-          used_cookies: !!cookieFile,
-          cookie_file: cookieFile ? path.basename(cookieFile) : "NENHUM",
-        })
-
-        res.json({
-          file: `/downloads/${downloadKey}`,
-          filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-          size: stats.size,
-          title: data.title,
-          duration: data.duration,
-          duration_formatted: durationCheck.duration_formatted,
-          platform: detectedPlatform,
-          quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-          used_cookies: !!cookieFile,
-          economy_mode: resourceEconomizer.isEconomyMode, // Assumindo que existe essa variável
-        })
-      } catch (downloadError) {
-        console.error("❌ Erro no download:", downloadError.message)
-
-        if (isYouTubeCriticalError(downloadError.message)) {
-          console.error("❌ Erro CRÍTICO do YouTube:", downloadError.message)
-          return res.status(500).json({
-            error: "YouTube: Não foi possível baixar este vídeo",
-            type: "youtube_critical_error",
-            details: "O YouTube bloqueou o download ou o vídeo está indisponível",
-            possible_causes: [
-              "Cookies do YouTube expiraram",
-              "YouTube detectou acesso automatizado",
-              "Vídeo com restrições de região",
-              "Formato de vídeo não disponível",
-            ],
-            suggestions: [
-              "Aguarde alguns minutos e tente novamente",
-              "Tente outro vídeo do YouTube",
-              "Verifique se o vídeo está disponível publicamente",
-            ],
-          })
-        }
-
-        // 🎯 CORREÇÃO YOUTUBE: Verificar se e erro de formato nao disponivel
-        if (detectedPlatform === "youtube" && isFormatNotAvailableError(downloadError.message)) {
-          console.log("🎯 YouTube erro de formato detectado - tentando formato simplificado...")
-          
-          try {
-            const fallbackArgs = [
-              ...buildSecureCommand(randomUA, cookieFile, detectedPlatform),
-              "-f",
-              getSimpleFormatSelector(format, quality),
-              ...(format === "mp3" 
-                ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${Number.parseInt(quality || "128")}k -ar 44100`]
-                : ["--merge-output-format", "mp4"]),
-              "-o",
-              outputPath,
-              url,
-            ]
-            
-            const { stderr: fallbackStderr } = await executeSecureCommand(ytDlpPath, fallbackArgs, {
-              timeout: 300000,
-            })
-            
-            if (fallbackStderr && isYouTubeCriticalError(fallbackStderr)) {
-              throw new Error(fallbackStderr)
-            }
-            
-            // Verificar se arquivo foi criado
-            let finalFilePath = outputPath
-            if (!fs.existsSync(finalFilePath)) {
-              finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
-            }
-            
-            if (finalFilePath && fs.existsSync(finalFilePath)) {
-              const stats = fs.statSync(finalFilePath)
-              if (stats.size > 1000) {
-                const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-                fileMap.set(downloadKey, {
-                  actualPath: finalFilePath,
-                  actualFilename: path.basename(finalFilePath),
-                  userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: stats.size,
-                  created: Date.now(),
-                })
-                
-                ultraAggressiveMemoryCleanup()
-                
-                return res.json({
-                  file: `/downloads/${downloadKey}`,
-                  filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: stats.size,
-                  title: data.title,
-                  duration: data.duration,
-                  duration_formatted: durationCheck.duration_formatted,
-                  platform: detectedPlatform,
-                  quality_achieved: "best", // Formato fallback
-                  used_cookies: !!cookieFile,
-                  format_fallback_applied: true,
-                })
-              }
-            }
-            
-            throw new Error("Arquivo nao criado apos fallback")
-          } catch (fallbackError) {
-            console.error("❌ YouTube fallback de formato falhou:", fallbackError.message)
-            return res.status(500).json({
-              error: "YouTube: Nenhum formato de video disponivel",
-              type: "youtube_format_error",
-              suggestions: [
-                "Tente uma qualidade diferente (ex: 720p)",
-                "Tente baixar apenas o audio (MP3)",
-                "Alguns videos tem formatos limitados",
-              ],
-            })
-          }
-        }
-        
-        // 🎯 CORREÇÃO YOUTUBE: Verificar se é erro de arquivo vazio
-        if (detectedPlatform === "youtube" && isYouTubeEmptyFileError(downloadError.message)) {
-          console.log("🎯 YouTube erro de arquivo vazio detectado - iniciando retry...")
-
-          try {
-            const retryResult = await YouTubeEmptyFileHandler.handleEmptyFile(
-              url,
-              format,
-              quality,
-              randomUA,
-              cookieFile,
-              detectedPlatform,
-              outputPath,
-            )
-
-            if (retryResult.success) {
-              console.log("✅ YouTube retry após erro bem-sucedido!")
-
-              const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-              fileMap.set(downloadKey, {
-                actualPath: retryResult.filePath,
-                actualFilename: path.basename(retryResult.filePath),
-                userFriendlyName: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                size: retryResult.size,
-                created: Date.now(),
-              })
-
-              ultraAggressiveMemoryCleanup()
-
-              return res.json({
-                file: `/downloads/${downloadKey}`,
-                filename: `${data.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                size: retryResult.size,
-                title: data.title,
-                duration: data.duration,
-                duration_formatted: durationCheck.duration_formatted,
-                platform: detectedPlatform,
-                quality_achieved: format === "mp3" ? `${quality}kbps` : `${quality}p`,
-                used_cookies: !!cookieFile,
-                economy_mode: resourceEconomizer.isEconomyMode, // Assumindo que existe essa variável
-                youtube_retry_applied: true,
-                retry_success: true,
-              })
-            }
-          } catch (retryError) {
-            console.error("❌ YouTube retry após erro falhou:", retryError.message)
-            return res.status(500).json({
-              error: "YouTube: Problema persistente com este vídeo. Tente outro.",
-              type: "youtube_persistent_error",
-              suggestion: "Este vídeo específico est�� com problemas. Tente outro vídeo do YouTube.",
-            })
-          }
-        }
-
-        if (isNonCriticalError(downloadError.message)) {
-          console.log("⚠️ Erro não crítico detectado, tentando continuar...")
-        } else if (isAuthenticationError(downloadError.message)) {
-          if (detectedPlatform === "instagram") {
-            return res.status(400).json({
-              error: "Instagram requer login. Configure cookies via environment variables.",
-              type: "instagram_auth_required",
-              platform: "instagram",
-            })
-          } else if (detectedPlatform === "twitter") {
-            // 🐦 Twitter: Cookies podem estar expirados - retornar erro claro
-            return res.status(400).json({
-              error: "Twitter/X: Cookies de autenticacao expiraram ou invalidos.",
-              type: "twitter_auth_error",
-              platform: "twitter",
-              details: "Os cookies do Twitter precisam ser atualizados no servidor.",
-              suggestion: "Entre em contato com o administrador para atualizar os cookies do Twitter.",
-            })
-          }
-          return res.status(400).json({
-            error: "Conteúdo privado ou requer login.",
-            type: "private_content",
-          })
-        } else {
-          return res.status(500).json({ error: "Falha no download/conversão" })
-        }
-      }
-    } catch (error) {
-      console.error("❌ Erro no metadata:", error.message?.substring(0, 500))
-      console.error("❌ Platform:", detectedPlatform, "| URL:", url?.substring(0, 80))
-
-      // 🎯 NOVO: Tratar erro de formato nao disponivel durante metadata
-      // Este erro pode ocorrer quando o YouTube retorna um erro de formato
-      // mesmo durante a obtencao de metadata (yt-dlp valida formatos)
-      if (detectedPlatform === "youtube" && isFormatNotAvailableError(error.message)) {
-        console.log("🎯 YouTube: Erro de formato durante metadata - tentando sem validacao de formato...")
-        
-        try {
-          // Tentar obter metadata sem NENHUMA validacao de formato
-          // CRITICO: --ignore-no-formats-error e essencial para YouTube
-          const metadataOnlyArgs = [
-            "--user-agent", randomUA,
-            "--js-runtimes", "node",
-            "--no-playlist",
-            "--no-warnings",
-            "--ignore-errors",
-            "--ignore-no-formats-error",  // ESSENCIAL
-            "--dump-single-json",  // Melhor que -j para YouTube
-            "--skip-download",
-          ]
-          
-          if (cookieFile) {
-            metadataOnlyArgs.push("--cookies", cookieFile)
-          }
-          metadataOnlyArgs.push(url)
-          
-          const { stdout: metaStdout } = await executeSecureCommand(ytDlpPath, metadataOnlyArgs, {
-            timeout: 30000,
-          })
-          
-          const jsonLine = metaStdout.split("\n").find((line) => line.trim().startsWith("{"))
-          if (jsonLine) {
-            const metaData = JSON.parse(jsonLine)
-            console.log("✅ Metadata obtido com sucesso via fallback!")
-            
-            // Agora tentar download com formato "best"
-            const safeTitle = generateSecureFilename(metaData.title, quality, format, uniqueId)
-            const outputPath = path.join(DOWNLOADS, safeTitle)
-            
-            // Usar comandos YouTube especificos que SEMPRE funcionam
-            let downloadArgs
-            if (format === "mp3") {
-              const q = Number.parseInt(quality || "128")
-              downloadArgs = [
-                "--user-agent", randomUA,
-                "--js-runtimes", "node",
-                "--no-playlist",
-                "--no-warnings",
-                "--ignore-errors",
-                "--ignore-no-formats-error",
-                "-f", "bestaudio/best",
-                "-x",
-                "--audio-format", "mp3",
-                "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`,
-                "-o", outputPath,
-              ]
-            } else {
-              const videoFormatSelector = getFormatSelector("mp4", quality, "youtube")
-              downloadArgs = [
-                "--user-agent", randomUA,
-                "--js-runtimes", "node",
-                "--no-playlist",
-                "--no-warnings",
-                "--ignore-errors",
-                "--ignore-no-formats-error",
-                "-f", videoFormatSelector,
-                "--merge-output-format", "mp4",
-                "-o", outputPath,
-              ]
-            }
-            if (cookieFile) {
-              downloadArgs.splice(downloadArgs.length - 2, 0, "--cookies", cookieFile)
-            }
-            downloadArgs.push(url)
-            
-            const { stderr: dlStderr } = await executeSecureCommand(ytDlpPath, downloadArgs, {
-              timeout: 300000,
-            })
-            
-            if (dlStderr && isYouTubeCriticalError(dlStderr)) {
-              throw new Error(dlStderr)
-            }
-            
-            // Verificar arquivo
-            let finalFilePath = outputPath
-            if (!fs.existsSync(finalFilePath)) {
-              finalFilePath = findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
-            }
-            
-            if (finalFilePath && fs.existsSync(finalFilePath)) {
-              const stats = fs.statSync(finalFilePath)
-              if (stats.size > 1000) {
-                const downloadKey = `download_${crypto.randomBytes(16).toString("hex")}.${format === "mp3" ? "mp3" : "mp4"}`
-                fileMap.set(downloadKey, {
-                  actualPath: finalFilePath,
-                  actualFilename: path.basename(finalFilePath),
-                  userFriendlyName: `${metaData.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: stats.size,
-                  created: Date.now(),
-                })
-                
-                ultraAggressiveMemoryCleanup()
-                
-                return res.json({
-                  file: `/downloads/${downloadKey}`,
-                  filename: `${metaData.title.substring(0, 50)} - ${format === "mp3" ? quality + "kbps" : quality + "p"}.${format === "mp3" ? "mp3" : "mp4"}`,
-                  size: stats.size,
-                  title: metaData.title,
-                  duration: metaData.duration,
-                  platform: detectedPlatform,
-                  quality_achieved: "best",
-                  format_fallback_applied: true,
-                })
-              }
-            }
-          }
-          
-          throw new Error("Metadata fallback nao produziu resultados")
-        } catch (metaFallbackError) {
-          console.error("❌ Fallback de metadata tambem falhou:", metaFallbackError.message)
-          return res.status(500).json({
-            error: "YouTube: Este video tem formatos restritos",
-            type: "youtube_format_restricted",
-            suggestions: [
-              "Tente baixar em uma qualidade diferente",
-              "Alguns videos do YouTube tem formatos limitados",
-              "Tente baixar apenas o audio (MP3)",
-            ],
-          })
-        }
-      }
-
-      if (isYouTubeCriticalError(error.message)) {
-        console.error("❌ Erro CRÍTICO do YouTube no metadata:", error.message)
-        return res.status(500).json({
-          error: "YouTube: Não foi possível acessar este vídeo",
-          type: "youtube_critical_error",
-          details: "O YouTube bloqueou o acesso ou o vídeo está indisponível",
-          possible_causes: [
-            "Cookies do YouTube expiraram",
-            "YouTube detectou acesso automatizado",
-            "Vídeo com restrições de região",
-            "Vídeo foi removido ou está privado",
-          ],
-          suggestions: [
-            "Aguarde alguns minutos e tente novamente",
-            "Tente outro vídeo do YouTube",
-            "Verifique se o vídeo está disponível publicamente",
-          ],
-        })
-      }
-
-      if (isNonCriticalError(error.message)) {
-        console.log("⚠️ Erro não crítico detectado, tentando continuar...")
-      } else if (isAuthenticationError(error.message)) {
-        if (detectedPlatform === "instagram") {
-          return res.status(400).json({
-            error: "Instagram requer login. Configure cookies via environment variables.",
-            type: "instagram_auth_required",
-            platform: "instagram",
-          })
-        } else if (detectedPlatform === "twitter") {
-          return res.status(400).json({
-            error: "Twitter/X: Cookies de autenticacao expiraram ou invalidos.",
-            type: "twitter_auth_error",
-            platform: "twitter",
-            details: "Os cookies do Twitter precisam ser atualizados no servidor.",
-            suggestion: "Entre em contato com o administrador para atualizar os cookies do Twitter.",
-          })
-        }
-        return res.status(400).json({
-          error: "Conteúdo privado ou requer login.",
-          type: "private_content",
-        })
-      } else {
-        return res.status(500).json({ error: "Falha ao obter informações do vídeo" })
+    if (stderr) {
+      if (isFormatNotAvailableError(stderr)) {
+        // Try simple fallback format
+        const fbArgs = [...buildSecureCommand(userAgent, cookieFile, platform), "-f", getSimpleFormatSelector(format, quality),
+          ...(format === "mp3" ? ["-x", "--audio-format", "mp3", "--postprocessor-args", `ffmpeg:-b:a ${q}k -ar 44100`] : ["--merge-output-format", "mp4"]),
+          "-o", outputPath, url]
+        const { stderr: fbStderr } = await executeSecureCommand(ytDlpPath, fbArgs, { timeout: 300000 })
+        if (fbStderr && isYouTubeCriticalError(fbStderr)) throw new Error(fbStderr)
+        console.log("[DOWNLOAD] Format fallback succeeded")
+      } else if (isNonCriticalError(stderr)) {
+        console.log("[DOWNLOAD] Non-critical warnings ignored:", stderr.substring(0, 100))
+      } else if (isAuthenticationError(stderr)) {
+        if (platform === "instagram") return res.status(400).json({ error: "Instagram requires login. Please configure cookies via environment variables.", type: "auth_required", platform })
+        if (platform === "twitter") return res.status(400).json({ error: "Twitter/X authentication cookies have expired or are invalid. Please contact the administrator.", type: "auth_required", platform })
+        return res.status(400).json({ error: "This content is private or requires login.", type: "private_content" })
       }
     }
-  } catch (error) {
-    console.error("❌ Erro inesperado:", error?.message || error)
-    console.error("❌ Stack:", error?.stack?.substring(0, 300))
-    res.status(500).json({ error: "Erro interno do servidor" })
+
+    let finalPath = fs.existsSync(outputPath) ? outputPath : findRecentFile(DOWNLOADS, startTime, [`.${format === "mp3" ? "mp3" : "mp4"}`])
+    if (!finalPath) return res.status(500).json({ error: "File was not created after download", type: "download_failed" })
+
+    const stats = fs.statSync(finalPath)
+    if (stats.size < 1000) return res.status(500).json({ error: "Downloaded file appears to be empty or corrupt", type: "corrupt_file" })
+
+    return respondWithFile(res, finalPath, data, format, quality, platform)
+  } catch (err) {
+    console.error("[DOWNLOAD] Unexpected error:", err?.message)
+    console.error("[DOWNLOAD] Stack:", err?.stack?.substring(0, 300))
+
+    if (isAuthenticationError(err.message)) {
+      return res.status(400).json({ error: "This content is private or requires authentication.", type: "auth_required" })
+    }
+
+    return res.status(500).json({ error: "Internal server error", type: "server_error" })
   } finally {
-    // 🔧 DECREMENTAR CONTADOR APENAS SE FOI INCREMENTADO
     if (downloadStarted) {
-      activeDownloads = Math.max(0, activeDownloads - 1) // 🔧 NUNCA DEIXAR NEGATIVO
-      console.log(`📉 Downloads ativos: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
-
-      // Limpeza após finalizar download
-      if (activeDownloads === 0) {
-        setTimeout(() => {
-          ultraAggressiveMemoryCleanup()
-        }, 5000) // 5 segundos após último download
-      }
+      activeDownloads = Math.max(0, activeDownloads - 1)
+      console.log(`[DOWNLOAD] Active downloads after finish: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+      if (activeDownloads === 0) setTimeout(runMemoryCleanup, 5000)
     }
   }
 })
 
-// 🧠 NOVA ROTA: Status de memória em tempo real - RAILWAY COMPATIBLE
-app.get("/memory", (req, res) => {
-  const memoryStats = logMemoryUsage()
-
-  const gcMethods = []
-
-  // Verificar múltiplos métodos de GC
-  if (typeof global.gc === "function") {
-    gcMethods.push("global.gc() disponível")
-  }
-
-  try {
-    const v8 = require("v8")
-    if (v8.getHeapStatistics) {
-      gcMethods.push("V8 heap statistics disponível")
-    }
-  } catch (e) {
-    gcMethods.push("V8 não disponível")
-  }
-
-  res.json({
-    message: "🧠 Status de Memória em Tempo Real - RAILWAY OPTIMIZED",
-    timestamp: new Date().toISOString(),
-    memory: memoryStats,
-    gc_methods: gcMethods,
-    gc_available: gcMethods.length > 0,
-    environment_variables: {
-      NODE_OPTIONS: process.env.NODE_OPTIONS || "não definido",
-      NODE_ENV: process.env.NODE_ENV || "não definido",
-      MAX_OLD_SPACE_SIZE: process.env.MAX_OLD_SPACE_SIZE || "não definido",
-    },
-    uptime: Math.round(process.uptime()),
-    active_downloads: activeDownloads,
-    last_activity: Math.round((Date.now() - lastActivity) / 1000) + "s ago",
-    recommendations: [
-      gcMethods.length > 0 ? "✅ Métodos de limpeza disponíveis" : "❌ Nenhum método de GC - usando limpeza manual",
-      memoryStats.heapUsed > 200 ? "⚠️ Alto uso de memória - executando limpeza" : "✅ Uso de memória normal",
-      activeDownloads === 0 ? "💤 Servidor inativo - candidato para sleep mode" : "🚀 Servidor ativo",
-    ],
-    railway_workaround: gcMethods.length === 0 ? "Usando limpeza manual agressiva" : "GC nativo funcionando",
-  })
-})
-
-// 🔍 ROTA DE TESTE DE COOKIES - ATUALIZADA COM TWITTER
-app.get("/test-cookies", async (req, res) => {
-  console.log("🧪 === TESTE DE COOKIES INICIADO ===")
-
-  const results = {
-    environment_variables: {},
-    cookie_files: {},
-    pools: {
-      google: googleCookiePool.length,
-      instagram: instagramCookiePool.length,
-      twitter: twitterCookiePool.length, // 🐦 INCLUÍDO TWITTER
-      general: generalCookiePool.length,
-    },
-    tests: {},
-    recommendations: [],
-  }
-
-  // 1. Verificar variáveis de ambiente
-  let envVarsFound = 0
-
-  // Google
-  for (let i = 1; i <= 10; i++) {
-    const envVar = `GOOGLE_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      const validation = validateCookieFormat(cookieContent, envVar)
-
-      results.environment_variables[envVar] = {
-        exists: true,
-        length: cookieContent.length,
-        has_equals: cookieContent.includes("="), // 🔧 MANTIDO PARA COMPATIBILIDADE, MAS NÃO USADO NA VALIDAÇÃO
-        format_valid: validation.valid,
-        valid_lines: validation.validLines,
-        invalid_lines: validation.invalidLines,
-        issues: validation.issues.slice(0, 3),
-      }
-    } else {
-      results.environment_variables[envVar] = { exists: false }
-    }
-  }
-
-  // Instagram
-  for (let i = 1; i <= 8; i++) {
-    const envVar = `INSTAGRAM_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      const validation = validateCookieFormat(cookieContent, envVar)
-
-      results.environment_variables[envVar] = {
-        exists: true,
-        length: cookieContent.length,
-        has_equals: cookieContent.includes("="),
-        format_valid: validation.valid,
-        valid_lines: validation.validLines,
-        invalid_lines: validation.invalidLines,
-      }
-    } else {
-      results.environment_variables[envVar] = { exists: false }
-    }
-  }
-
-  // 🐦 Twitter - NOVO
-  for (let i = 1; i <= 5; i++) {
-    const envVar = `TWITTER_COOKIE_${i.toString().padStart(2, "0")}`
-    const cookieContent = process.env[envVar]
-
-    if (cookieContent) {
-      envVarsFound++
-      const validation = validateCookieFormat(cookieContent, envVar)
-      const twitterValidation = validateTwitterCookies(cookieContent)
-
-      results.environment_variables[envVar] = {
-        exists: true,
-        length: cookieContent.length,
-        has_equals: cookieContent.includes("="),
-        format_valid: validation.valid,
-        valid_lines: validation.validLines,
-        invalid_lines: validation.invalidLines,
-        twitter_nsfw_ready: twitterValidation.nsfwReady,
-        twitter_critical_missing: twitterValidation.criticalMissing,
-        twitter_cookies_found: twitterValidation.foundCookies,
-      }
-    } else {
-      results.environment_variables[envVar] = { exists: false }
-    }
-  }
-
-  // 2. Verificar arquivos criados
-  try {
-    if (fs.existsSync(COOKIES_DIR)) {
-      const files = fs.readdirSync(COOKIES_DIR).filter((f) => f.endsWith(".txt"))
-
-      for (const file of files) {
-        const filepath = path.join(COOKIES_DIR, file)
-        const stats = fs.statSync(filepath)
-        const content = fs.readFileSync(filepath, "utf8")
-        const validation = validateCookieFormat(content, file)
-
-        results.cookie_files[file] = {
-          size: stats.size,
-          lines: content.split("\n").length,
-          format_valid: validation.valid,
-          valid_lines: validation.validLines,
-          invalid_lines: validation.invalidLines,
-          issues: validation.issues.slice(0, 2),
-        }
-
-        // 🐦 Validação específica para Twitter
-        if (file.startsWith("twitter_")) {
-          const twitterValidation = validateTwitterCookies(content)
-          results.cookie_files[file].twitter_nsfw_ready = twitterValidation.nsfwReady
-          results.cookie_files[file].twitter_critical_missing = twitterValidation.criticalMissing
-        }
-      }
-    }
-  } catch (error) {
-    results.cookie_files.error = error.message
-  }
-
-  // 3. Testar seleção de cookies
-  const platforms = ["youtube", "instagram", "twitter"] // 🐦 INCLUÍDO TWITTER
-
-  for (const platform of platforms) {
-    const selectedCookie = getSmartCookie(platform)
-
-    results.tests[platform] = {
-      cookie_selected: !!selectedCookie,
-      cookie_path: selectedCookie ? path.basename(selectedCookie) : null,
-      cookie_exists: selectedCookie ? fs.existsSync(selectedCookie) : false,
-    }
-
-    // 🐦 Info específica para Twitter
-    if (platform === "twitter" && selectedCookie) {
-      const isTwitterSpecific = path.basename(selectedCookie).startsWith("twitter_")
-      results.tests[platform].twitter_specific = isTwitterSpecific
-      results.tests[platform].nsfw_capable = isTwitterSpecific
-    }
-  }
-
-  // 4. Gerar recomendações
-  if (envVarsFound === 0) {
-    results.recommendations.push("❌ Nenhuma variável de ambiente encontrada - configure GOOGLE_COOKIE_01, etc.")
-  } else {
-    results.recommendations.push(`✅ ${envVarsFound} variáveis de ambiente encontradas`)
-  }
-
-  if (results.pools.google === 0 && results.pools.instagram === 0 && results.pools.twitter === 0) {
-    results.recommendations.push("❌ Nenhum cookie carregado - verifique formato e variáveis")
-  } else {
-    results.recommendations.push(
-      `✅ ${results.pools.google + results.pools.instagram + results.pools.twitter} cookies carregados`,
-    )
-  }
-
-  // 🐦 Recomendação específica para Twitter
-  if (results.pools.twitter === 0) {
-    results.recommendations.push("⚠️ Nenhum cookie Twitter - conteúdo NSFW não disponível")
-  } else {
-    results.recommendations.push(`🐦 ${results.pools.twitter} cookies Twitter - NSFW habilitado`)
-  }
-
-  const hasFormatIssues = Object.values(results.environment_variables).some((v) => v.exists && !v.format_valid)
-  if (hasFormatIssues) {
-    results.recommendations.push("⚠️ Alguns cookies têm formato inválido - use formato Netscape do Cookie Editor")
-  } else {
-    results.recommendations.push("✅ Formato dos cookies OK")
-  }
-
-  console.log("🧪 === TESTE DE COOKIES CONCLUÍDO ===")
-
-  res.json({
-    message:
-      "🧪 Teste de Cookies Completo - RAILWAY MEMORY OPTIMIZATION + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
-    timestamp: new Date().toISOString(),
-    summary: {
-      env_vars_found: envVarsFound,
-      cookies_loaded: results.pools.google + results.pools.instagram + results.pools.twitter,
-      files_created: Object.keys(results.cookie_files).length,
-      twitter_nsfw_ready: results.pools.twitter > 0,
-      youtube_fix_applied: "✅ Estratégias múltiplas de bypass implementadas",
-      memory_optimization_applied: "🧠 Sistema de limpeza agressiva de memória ativado (Railway compatible)",
-      fix_applied: "✅ Removida verificação incorreta de '=' - cookies Netscape agora carregam corretamente",
-    },
-    results: results,
-  })
-})
+// ============================================================
+// FILE SERVING ROUTE
+// ============================================================
 
 app.get("/downloads/:fileKey", (req, res) => {
   const fileKey = sanitizeInput(req.params.fileKey, 100)
-
-  console.log("📥 Download solicitado:", fileKey)
+  console.log(`[SERVE] File requested: ${fileKey}`)
 
   const fileInfo = fileMap.get(fileKey)
-  if (!fileInfo) {
-    return res.status(404).json({ error: "Arquivo não encontrado ou expirado" })
-  }
+  if (!fileInfo) return res.status(404).json({ error: "File not found or has expired" })
 
   const { actualPath, userFriendlyName, size } = fileInfo
-
-  if (!fs.existsSync(actualPath)) {
-    fileMap.delete(fileKey)
-    return res.status(404).json({ error: "Arquivo não encontrado no disco" })
-  }
+  if (!fs.existsSync(actualPath)) { fileMap.delete(fileKey); return res.status(404).json({ error: "File no longer exists on disk" }) }
 
   try {
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-    res.setHeader("Pragma", "no-cache")
-    res.setHeader("Expires", "0")
     res.setHeader("X-Content-Type-Options", "nosniff")
-
-    console.log("✅ Enviando arquivo seguro:", userFriendlyName)
-
-    const fileStream = fs.createReadStream(actualPath)
-
-    fileStream.on("error", (error) => {
-      console.error("❌ Erro ao ler arquivo:", error)
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Erro ao ler arquivo" })
-      }
-    })
-
-    fileStream.pipe(res)
-  } catch (error) {
-    console.error("❌ Erro na rota de download:", error)
-    if (!res.headersSent) {
-      res.status(500).json({ error: "Erro interno do servidor" })
-    }
+    console.log(`[SERVE] Sending: ${userFriendlyName}`)
+    const stream = fs.createReadStream(actualPath)
+    stream.on("error", (err) => { console.error("[SERVE] Stream error:", err); if (!res.headersSent) res.status(500).json({ error: "Error reading file" }) })
+    stream.pipe(res)
+  } catch (err) {
+    console.error("[SERVE] Error:", err)
+    if (!res.headersSent) res.status(500).json({ error: "Internal server error" })
   }
 })
 
-app.get("/health", (req, res) => {
-  const memoryStats = logMemoryUsage()
+// ============================================================
+// UTILITY ROUTES
+// ============================================================
 
-  const stats = {
-    status:
-      "OK - SECURE + RAILWAY MEMORY OPTIMIZED + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
-    version:
-      "6.2.1 - RAILWAY MEMORY OPTIMIZATION + YOUTUBE BYPASS STRATEGIES + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED",
+app.get("/health", (req, res) => {
+  const mem = logMemoryUsage()
+  res.json({
+    status: "ok",
+    version: "7.0.0",
     timestamp: new Date().toISOString(),
-    limits: {
-      max_duration: formatDuration(MAX_DURATION), // 2 horas
-      max_file_size: "512MB", // Reduzido
-      rate_limit: "20 downloads a cada 10 minutos",
-      concurrent: "4 downloads simultâneos", // Reduzido
-    },
-    memory_optimization: {
-      gc_available: typeof global.gc !== "undefined",
-      railway_workaround: typeof global.gc === "undefined" ? "Manual cleanup active" : "Native GC active",
-      current_memory: memoryStats,
-      sleep_mode_enabled: false, // Desativado
-      sleep_mode_tolerance: "N/A",
-      auto_cleanup_enabled: true,
-    },
-    cors_configuration: {
-      status: "FIXED - Configuração robusta para evitar sleep mode issues",
-      origins: ["https://www.waifuconvert.com", "https://waifuconvert.com", "https://waifuconvert.vercel.app"],
-      preflight_handler: "✅ Explicit OPTIONS handler implemented",
-      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      credentials: true,
-    },
-    security_features: [
-      "✅ Input validation",
-      "✅ Command injection protection",
-      "✅ Rate limiting",
-      "✅ Duration limits (2h max)",
-      "✅ Secure file handling",
-      "✅ Domain whitelist",
-      "✅ Resource limits",
-      "✅ Helmet security headers",
-      "✅ Counter bug fixed",
-      "✅ 144p quality support",
-      "✅ Non-critical error handling",
-      "✅ Cookie debugging system",
-      "✅ Twitter NSFW support",
-      "✅ Cookie validation fixed - Netscape format now works",
-      "🎯 YouTube bypass strategies implemented",
-      "🎯 Multiple fallback methods for YouTube",
-      "🎯 Auto yt-dlp updates",
-      "🧠 Railway-compatible memory management",
-      "🧠 Multiple GC methods (native + manual)",
-      "🧠 Aggressive cleanup on high memory usage",
-      "🧠 No sleep mode",
-    ],
-    cookies_loaded: {
-      google: googleCookiePool.length,
-      instagram: instagramCookiePool.length,
-      twitter: twitterCookiePool.length,
-      total: generalCookiePool.length,
-    },
+    uptime_seconds: Math.round(process.uptime()),
     active_downloads: activeDownloads,
-    uptime: process.uptime(),
+    memory: mem,
+    cookies: { google: googleCookiePool.length, instagram: instagramCookiePool.length, twitter: twitterCookiePool.length, total: generalCookiePool.length },
+    limits: { max_duration: formatDuration(MAX_DURATION), max_file_size: "512MB", concurrent_downloads: MAX_CONCURRENT_DOWNLOADS, rate_limit: "20 downloads per 10 minutes" },
+    gc_available: typeof global.gc === "function",
+  })
+})
+
+app.get("/memory", (req, res) => {
+  const mem = logMemoryUsage()
+  res.json({
+    timestamp: new Date().toISOString(),
+    memory: mem,
+    gc_available: typeof global.gc === "function",
+    active_downloads: activeDownloads,
+    last_activity_seconds_ago: Math.round((Date.now() - lastActivity) / 1000),
+    node_options: process.env.NODE_OPTIONS || "not set",
+  })
+})
+
+app.get("/test-cookies", (req, res) => {
+  const envVars = {}
+
+  const check = (envVar) => {
+    const content = process.env[envVar]
+    if (!content) { envVars[envVar] = { exists: false }; return }
+    const fmt = validateCookieFormat(content)
+    envVars[envVar] = { exists: true, length: content.length, format_valid: fmt.valid, valid_lines: fmt.validLines }
   }
 
-  res.json(stats)
+  for (let i = 1; i <= 10; i++) check(`GOOGLE_COOKIE_${String(i).padStart(2, "0")}`)
+  for (let i = 1; i <= 8; i++) check(`INSTAGRAM_COOKIE_${String(i).padStart(2, "0")}`)
+  for (let i = 1; i <= 5; i++) {
+    const envVar = `TWITTER_COOKIE_${String(i).padStart(2, "0")}`
+    const content = process.env[envVar]
+    if (!content) { envVars[envVar] = { exists: false }; continue }
+    const fmt = validateCookieFormat(content)
+    const tw = validateTwitterCookies(content)
+    envVars[envVar] = { exists: true, length: content.length, format_valid: fmt.valid, valid_lines: fmt.validLines, nsfw_ready: tw.nsfwReady, critical_missing: tw.criticalMissing }
+  }
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    pools: { google: googleCookiePool.length, instagram: instagramCookiePool.length, twitter: twitterCookiePool.length, total: generalCookiePool.length },
+    environment_variables: envVars,
+    selection_test: {
+      youtube: getSmartCookie("youtube") ? path.basename(getSmartCookie("youtube")) : null,
+      instagram: getSmartCookie("instagram") ? path.basename(getSmartCookie("instagram")) : null,
+      twitter: getSmartCookie("twitter") ? path.basename(getSmartCookie("twitter")) : null,
+    },
+  })
 })
 
 app.get("/", (req, res) => {
   res.json({
-    message:
-      "🛡️ WaifuConvert Backend - RAILWAY MEMORY OPTIMIZED + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
-    version: "6.2.1",
-    status: "online - security active + railway memory optimized + youtube fix + cookie fix + economy mode enabled",
-    security_level: "HIGH",
-    limits: {
-      duration: "2 horas máximo (MP3/MP4, qualquer qualidade)",
-      file_size: "512MB máximo", // Reduzido
-      rate_limit: "20 downloads a cada 10 minutos",
-      concurrent: "4 downloads simultâneos", // Reduzido
-    },
-    quality_support: {
-      mp3: "64kbps - 320kbps",
-      mp4: "144p, 360p, 480p, 720p, 1080p",
-    },
-    memory_features: [
-      "🧠 Railway-compatible garbage collection",
-      "🧠 Multiple cleanup methods (native + manual)",
-      "🧠 Memory usage monitoring",
-      "🧠 Automatic cleanup triggered by high memory",
-      "🧠 Aggressive cleanup before downloads",
-      "🧠 No sleep mode active",
-      "🧠 Memory limit enforcement (approx. 256MB)",
-      "🧠 Real-time memory alerts",
-      "🧠 Aggressive manual cleanup when GC unavailable",
-    ],
-    cors_features: [
-      "🚨 Robust CORS configuration",
-      "🚨 Explicit preflight handler",
-      "🚨 No sleep mode compatibility needed",
-      "🚨 Multiple origin support",
-      "🚨 Credential support enabled",
-      "🚨 Comprehensive headers support",
-    ],
-    youtube_features: [
-      "🎯 Multiple bypass strategies",
-      "🎯 Auto yt-dlp updates",
-      "🎯 Advanced cookie rotation",
-      "🎯 Fallback methods",
-      "🎯 Rate limit handling",
-      "🎯 Bot detection bypass",
-      "🎯 Empty file error handler with retries",
-    ],
-    twitter_features: [
-      "🐦 Dedicated Twitter cookie pool",
-      "🔞 NSFW content support",
-      "🔍 Twitter-specific cookie validation",
-      "⚡ Optimized for Twitter rate limits",
-      "🛡️ Secure Twitter authentication",
-    ],
-    debug_features: [
-      "🔍 Cookie format validation",
-      "🔍 Environment variable checking",
-      "🔍 Cookie pool debugging",
-      "🔍 Platform-specific cookie selection",
-      "🔍 Real-time cookie usage logging",
-      "🐦 Twitter NSFW readiness check",
-      "🎯 YouTube strategy testing",
-      "🧠 Railway memory usage monitoring",
-      "🚨 CORS troubleshooting",
-    ],
-    fixes_applied: [
-      "✅ Counter never goes negative",
-      "✅ 144p quality support added",
-      "✅ Impersonation warnings eliminated",
-      "✅ Subtitle rate limit errors ignored",
-      "✅ Non-critical error handling",
-      "✅ Cookie debugging system",
-      "✅ Twitter NSFW support added",
-      "✅ Cookie validation fixed - removed incorrect '=' check",
-      "✅ Netscape format cookies now load properly",
-      "🎯 YouTube bypass strategies implemented",
-      "🎯 System for fallback on blocked YouTube content",
-      "🎯 Auto yt-dlp update system",
-      "🧠 Railway memory optimization system implemented",
-      "🧠 Multiple GC methods for compatibilidade Railway",
-      "🚨 CORS sleep mode issue RESOLVIDO (sleep mode disabled)",
-      "🚨 Explicit preflight handler added",
-      "✅ Max concurrent downloads reduced to 4",
-      "✅ Max file size reduced to 512MB",
-      "✅ Max duration set to 1 hour for economy mode",
-    ],
-    features: [
-      "✅ Input validation & sanitization",
-      "✅ Command injection protection",
-      "✅ Rate limiting (20 downloads/10min)",
-      "✅ Duration limits (1h max for economy, 2h standard)",
-      "✅ Concurrent download limits",
-      "✅ Domain whitelist protection",
-      "✅ Security headers (Helmet)",
-      "✅ Safe cookie management",
-      "✅ Fixed cookie validation for Netscape format",
-      "🎯 Advanced YouTube bypass system",
-      "🧠 Railway-intelligent memory management",
-      "🚨 Robust CORS configuration",
-      "⚡ Economy mode enabled",
-    ],
-    platform_support: {
-      tiktok: "✅ Working perfectly",
-      twitter: `🐦 Working with ${twitterCookiePool.length} dedicated cookies + ${googleCookiePool.length} fallback`,
-      instagram: `✅ Working with ${instagramCookiePool.length} cookies`,
-      youtube: `🎯 FIXED - Working with advanced bypass strategies + ${googleCookiePool.length} cookies`,
-    },
-    debug_endpoints: [
-      "🧪 /test-cookies - Diagnóstico completo de cookies (incluindo Twitter)",
-      "❤️ /health - Status do sistema",
-      "🧠 /memory - Status de memória em tempo real (Railway compatible)",
-    ],
-    railway_optimizations: [
-      "🚀 NODE_OPTIONS compatibility check",
-      "🚀 Multiple GC fallback methods",
-      "🚀 Aggressive manual cleanup",
-      "🚀 Memory pressure detection",
-      "🚀 No sleep mode",
-      "🚨 CORS configuration active without sleep mode concerns",
-    ],
-    economy_mode: {
-      enabled: true,
-      description: "Recursos otimizados para menor consumo de memória e CPU.",
-      limits: {
-        max_duration: "1 hora", // Limite menor em modo de economia
-      },
-    },
+    name: "WaifuConvert Backend",
+    version: "7.0.0",
+    status: "online",
+    endpoints: ["/download (POST)", "/downloads/:key (GET)", "/health (GET)", "/memory (GET)", "/test-cookies (GET)"],
+    supported_platforms: ["TikTok", "Twitter/X", "Instagram", "YouTube", "Reddit", "Facebook", "Twitch", "SoundCloud", "Vimeo", "Dailymotion", "Streamable"],
+    quality_options: { mp3: "64-320 kbps", mp4: "144p, 240p, 360p, 480p, 720p, 1080p" },
   })
 })
 
-// Rota de teste rapido para verificar se POST funciona
-app.post("/test-post", (req, res) => {
-  console.log("[TEST-POST] Body:", JSON.stringify(req.body || {}).substring(0, 200))
-  res.json({ ok: true, body_received: !!req.body, timestamp: new Date().toISOString() })
-})
+// ============================================================
+// ERROR HANDLERS
+// ============================================================
 
 app.use((error, req, res, next) => {
-  console.error("❌ Erro nao tratado:", error.message, "| Path:", req.path, "| Method:", req.method)
-  console.error("❌ Stack:", error.stack?.substring(0, 300))
-  res.status(500).json({
-    error: "Erro interno do servidor",
-    timestamp: new Date().toISOString(),
-  })
+  console.error("[ERROR] Unhandled middleware error:", error.message, "| Path:", req.path)
+  console.error("[ERROR] Stack:", error.stack?.substring(0, 300))
+  res.status(500).json({ error: "Internal server error", timestamp: new Date().toISOString() })
 })
 
 app.use("*", (req, res) => {
-  res.status(404).json({
-    error: "Rota não encontrada",
-    available_endpoints: ["/", "/health", "/download", "/test-cookies", "/memory"],
-  })
+  res.status(404).json({ error: "Route not found", available_endpoints: ["/", "/health", "/download", "/test-cookies", "/memory"] })
 })
 
-// 🧠 LIMPEZA AUTOMÁTICA DE ARQUIVOS E MEMÓRIA - OTIMIZADO PARA ECONOMIA
-// Intervalos ajustados para economia e sem sleep mode
-const FILE_CLEANUP_INTERVAL = 15 * 60 * 1000 // Limpar arquivos a cada 15 minutos
-const MEMORY_CLEANUP_INTERVAL = 5 * 60 * 1000 // Limpeza de memória a cada 5 minutos
+// ============================================================
+// INTERVALS & STARTUP
+// ============================================================
 
-// Iniciar os intervalos de limpeza
-fileCleanupInterval = setInterval(cleanupOldFiles, FILE_CLEANUP_INTERVAL)
+fileCleanupInterval = setInterval(cleanupOldFiles, 15 * 60 * 1000) // every 15 minutes
+
 memoryCleanupInterval = setInterval(() => {
-  console.log("🧠 Limpeza de memória periódica iniciada...")
-  ultraAggressiveMemoryCleanup()
+  console.log("[INTERVAL] Running periodic memory cleanup")
+  runMemoryCleanup()
   logMemoryUsage()
-}, MEMORY_CLEANUP_INTERVAL)
+}, 5 * 60 * 1000) // every 5 minutes
 
-// Remover a lógica de sleep mode baseada em `lastActivity`
-// O servidor agora roda continuamente com limpeza periódica.
+// YouTube token algorithms change every 2-4 weeks. Auto-updating yt-dlp
+// every 48 hours prevents the service from breaking without a manual redeploy.
+ytDlpUpdateInterval = setInterval(async () => {
+  console.log("[INTERVAL] Running periodic yt-dlp update check")
+  await ensureYtDlpUpdated()
+}, 48 * 60 * 60 * 1000) // every 48 hours
 
 app.listen(PORT, async () => {
-  console.log(
-    "🛡️ WaifuConvert Backend - RAILWAY MEMORY OPTIMIZED + YOUTUBE FIX + COOKIE VALIDATION FIXED + TWITTER SUPPORT + ECONOMY MODE ENABLED!",
-  )
-  console.log(`🌐 Porta: ${PORT}`)
+  console.log(`[STARTUP] WaifuConvert Backend v7.0.0 listening on port ${PORT}`)
 
-  // 🧠 VERIFICAR VARIÁVEIS DE OTIMIZAÇÃO DE MEMÓRIA NA INICIALIZAÇÃO - RAILWAY
-  checkOptimizationVariables()
+  // Check if native GC is available (requires NODE_OPTIONS=--expose-gc)
+  if (typeof global.gc === "function") {
+    console.log("[STARTUP] Native GC available")
+  } else {
+    console.log("[STARTUP] Native GC unavailable - using manual cleanup fallback (set NODE_OPTIONS=--expose-gc to enable)")
+  }
 
-  console.log("🔒 RECURSOS DE SEGURANÇA ATIVADOS:")
-  console.log("  ✅ Validação rigorosa de entrada")
-  console.log("  ✅ Proteção contra command injection")
-  console.log("  ✅ Rate limiting inteligente")
-  console.log("  ✅ Limite de duração: 1 hora (economia), 2 horas (padrão)")
-  console.log("  ✅ Contador de downloads corrigido")
-  console.log("  ✅ Suporte a 144p adicionado")
-  console.log("  ✅ Tratamento de erros não críticos")
-  console.log("  ✅ Sistema de debug de cookies")
-  console.log("  🐦 Suporte completo ao Twitter NSFW")
-  console.log("  🔧 CORREÇÃO APLICADA: Validação de cookies Netscape")
-  console.log("  🎯 YOUTUBE FIX: Estratégias múltiplas de bypass + retry")
-  console.log("  🎯 Auto-atualização do yt-dlp")
-  console.log("  🧠 RAILWAY MEMORY OPTIMIZATION: Sistema de limpeza agressiva")
-  console.log("  🧠 Múltiplos métodos de GC (nativo + manual)")
-  console.log("  🧠 Limpeza automática a cada 5 minutos")
-  console.log("  🧠 Sem sleep mode")
-  console.log("  🚨 CORS SLEEP MODE FIX: Configuração robusta (sleep mode desativado)")
-  console.log("  🚨 Explicit preflight handler")
-  console.log("  ✅ Whitelist de domínios")
-  console.log("  ✅ Limites de recursos (512MB, 4 downloads)")
-  console.log("  ✅ Execução segura de comandos")
-  console.log("  ✅ Gerenciamento seguro de arquivos")
-  console.log("  ⚡ Modo de economia ativado")
-
-  // Tentar atualizar yt-dlp na inicialização
-  console.log("🔄 Verificando yt-dlp na inicialização...")
+  // Update yt-dlp on startup to fix any YouTube token issues from downtime
   await ensureYtDlpUpdated()
 
-  const cookiesCreated = createSecureCookieFiles()
+  // Load cookies from environment variables
+  createSecureCookieFiles()
   loadCookiePool()
 
-  console.log("🍪 COOKIES SEGUROS:")
-  console.log(`  🔵 Google: ${googleCookiePool.length}`)
-  console.log(`  📸 Instagram: ${instagramCookiePool.length}`)
-  console.log(`  🐦 Twitter: ${twitterCookiePool.length}`)
-  console.log(`  📊 Total: ${generalCookiePool.length}`)
-
-  console.log("🎯 LIMITES DE ECONOMIA:")
-  console.log(`  📹 Duração máxima (economia): 1 hora`)
-  console.log(`  📁 Tamanho máximo (economia): 512MB`)
-  console.log(`  🚀 Downloads simultâneos: 4`)
-
-  console.log("🐦 RECURSOS TWITTER:")
-  console.log("  🔞 Suporte a conteúdo NSFW")
-  console.log("  🍪 Pool dedicado de cookies")
-  console.log("  🔍 Validação específica de cookies")
-  console.log("  ⚡ Otimizado para rate limits")
-
-  console.log("🎯 RECURSOS YOUTUBE:")
-  console.log("  🎯 Estratégias múltiplas de bypass")
-  console.log("  🎯 Auto-atualização do yt-dlp")
-  console.log("  🎯 Rotação inteligente de cookies")
-  console.log("  🎯 Fallback para conteúdo bloqueado")
-  console.log("  🎯 Detecção e bypass de bot")
-  console.log("  🎯 Tratamento de erro de arquivo vazio com retries")
-
-  console.log("🧠 RECURSOS DE MEMÓRIA RAILWAY:")
-  console.log("  🧠 Limpeza automática a cada 5 minutos")
-  console.log("  🧠 Múltiplos métodos de GC (nativo + manual)")
-  console.log("  🧠 Limpeza agressiva quando GC indisponível")
-  console.log("  🧠 Monitoramento de uso de RAM")
-  console.log("  🧠 Sem sleep mode")
-  console.log("  🧠 Limite de memória: ~256MB")
-  console.log("  🧠 Alertas de alto uso de memória")
-  console.log("  🧠 Cache cleanup automático")
-
-  console.log("🚨 RECURSOS DE CORS:")
-  console.log("  🚨 Configuração robusta (sem sleep mode issues)")
-  console.log("  🚨 Explicit preflight handler")
-  console.log("  🚨 Sem sleep mode para evitar problemas de CORS")
-
-  console.log("🔧 CORREÇÕES CRÍTICAS APLICADAS:")
-  console.log("  ✅ Removida verificação incorreta de '=' nos cookies")
-  console.log("  ✅ Cookies Netscape agora carregam corretamente")
-  console.log("  🎯 YouTube bypass strategies implementadas + retries")
-  console.log("  🎯 Sistema de fallback para YouTube bloqueado")
-  console.log("  🧠 Sistema de otimização de memória Railway implementado")
-  console.log("  🧠 Múltiplos métodos de GC para compatibilidade Railway")
-  console.log("  🚨 CORS sleep mode issue RESOLVIDO (sleep mode desativado)")
-  console.log("  🚨 Preflight handler explícito adicionado")
-  console.log("  ⚡ Modo de economia ativado")
-  console.log("  🚀 Limites reduzidos (downloads, tamanho, duração)")
-
-  console.log("🔍 ENDPOINTS DE DEBUG:")
-  console.log("  🧪 /test-cookies - Diagnóstico completo")
-  console.log("  ❤️ /health - Status do sistema")
-  console.log("  🧠 /memory - Status de memória em tempo real (Railway compatible)")
-
-  // 🧠 LOG INICIAL DE MEMÓRIA E TESTE DE LIMPEZA
-  console.log("🧠 Status inicial de memória:")
+  // Initial cleanup
+  cleanupOldFiles()
   logMemoryUsage()
 
-  console.log("🧪 Testando limpeza agressiva na inicialização...")
-  ultraAggressiveMemoryCleanup()
-
-  console.log("🚨 CORS configurado para:")
-  console.log("  🌐 https://www.waifuconvert.com")
-  console.log("  🌐 https://waifuconvert.com")
-  console.log("  🌐 https://waifuconvert.vercel.app")
-  console.log("  🛡️ Explicit preflight handler ativo")
-
-  // Limpeza de arquivos antigos na inicialização
-  cleanupOldFiles()
+  console.log(`[STARTUP] CORS origins: waifuconvert.com, waifuconvert.vercel.app, localhost:3000`)
+  console.log(`[STARTUP] Limits: ${MAX_CONCURRENT_DOWNLOADS} concurrent downloads, ${formatDuration(MAX_DURATION)} max duration, 512MB max file size`)
+  console.log("[STARTUP] Intervals: file cleanup every 15min, memory cleanup every 5min, yt-dlp update every 48h")
+  console.log("[STARTUP] Ready to serve requests")
 })
 
-process.on("uncaughtException", (error) => {
-  console.error("❌ UNCAUGHT EXCEPTION:", error.message)
-  console.error("❌ Stack:", error.stack?.substring(0, 500))
-  // NAO fazer process.exit(1) - deixar o Railway reiniciar se necessario
-  // O process.exit(1) matava o servidor silenciosamente!
-  try {
-    ultraAggressiveMemoryCleanup()
-  } catch (e) {
-    // ignorar erros de limpeza
-  }
-})
+// ============================================================
+// PROCESS SIGNAL HANDLERS
+// ============================================================
 
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("❌ Promise rejeitada:", reason?.message || reason)
-  console.error("❌ Stack:", reason?.stack?.substring(0, 300))
-  // NAO fazer process.exit - deixar o servidor continuar rodando
-})
-
-// Limpeza de intervalos quando o processo é encerrado
-function cleanupIntervals() {
+function gracefulShutdown(signal) {
+  console.log(`[SHUTDOWN] Received ${signal} - shutting down gracefully`)
   if (memoryCleanupInterval) clearInterval(memoryCleanupInterval)
   if (fileCleanupInterval) clearInterval(fileCleanupInterval)
-  console.log("🧹 Intervalos de limpeza encerrados.")
+  if (ytDlpUpdateInterval) clearInterval(ytDlpUpdateInterval)
+  runMemoryCleanup()
+  process.exit(0)
 }
 
-process.on("SIGTERM", () => {
-  console.log("🛑 Recebido SIGTERM, encerrando graciosamente...")
-  cleanupIntervals()
-  ultraAggressiveMemoryCleanup()
-  process.exit(0)
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"))
+process.on("SIGINT", () => gracefulShutdown("SIGINT"))
+
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT]", err.message)
+  console.error("[UNCAUGHT] Stack:", err.stack?.substring(0, 500))
+  try { runMemoryCleanup() } catch (_) {}
+  // Do not call process.exit() - Railway will restart if needed
 })
 
-process.on("SIGINT", () => {
-  console.log("🛑 Recebido SIGINT, encerrando graciosamente...")
-  cleanupIntervals()
-  ultraAggressiveMemoryCleanup()
-  process.exit(0)
+process.on("unhandledRejection", (reason) => {
+  console.error("[UNHANDLED_REJECTION]", reason?.message || reason)
+  console.error("[UNHANDLED_REJECTION] Stack:", reason?.stack?.substring(0, 300))
 })
