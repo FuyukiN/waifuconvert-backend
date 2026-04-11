@@ -994,21 +994,7 @@ app.get("/downloads/:fileKey", (req, res) => {
   if (!fs.existsSync(actualPath)) { fileMap.delete(fileKey); return res.status(404).json({ error: "File no longer exists on disk" }) }
 
   try {
-    // Some video titles contain characters (emojis, Arabic, CJK, lone surrogates)
-    // that cause encodeURIComponent to throw URIError: URI malformed.
-    // RFC 5987 (filename*) handles any UTF-8 safely; ASCII fallback for old clients.
-    let contentDisposition
-    try {
-      const encoded = encodeURIComponent(userFriendlyName)
-      const asciiName = userFriendlyName.replace(/[^ -~]/g, "_")
-      contentDisposition = `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`
-    } catch {
-      const safeName = userFriendlyName.replace(/[^ -~]/g, "_")
-      console.warn(`[SERVE] encodeURIComponent failed for title - using ASCII fallback: "${safeName}"`)
-      contentDisposition = `attachment; filename="${safeName}"`
-    }
-
-    res.setHeader("Content-Disposition", contentDisposition)
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(userFriendlyName)}"`)
     res.setHeader("Content-Type", "application/octet-stream")
     res.setHeader("Content-Length", size)
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
