@@ -10,7 +10,7 @@ const crypto = require("crypto")
 
 const app = express()
 
-// 🛡️ CONFIAR NO RAILWAY PROXY PARA RATE LIMITING CORRETO
+// 🛡️ CONFIAR NO RAILWAY PROXY PARA RATE LIMITING
 app.set("trust proxy", true)
 
 // 🛡️ CONFIGURAÇÕES MAIS GENEROSAS
