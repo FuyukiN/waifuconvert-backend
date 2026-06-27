@@ -646,10 +646,14 @@ function detectPlatform(url) {
 // FILE HELPERS
 // ============================================================
 
-function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"]) {
+function findRecentFile(baseDir, timestamp, extensions = [".mp4", ".mp3"], filenamePrefix = null) {
   try {
     const recent = fs.readdirSync(baseDir)
       .filter((f) => {
+        // If a prefix is provided, only match files that start with it.
+        // This prevents a YouTube download from accidentally matching a
+        // TikTok/X file that was downloaded moments earlier.
+        if (filenamePrefix && !f.startsWith(filenamePrefix)) return false
         const mt = fs.statSync(path.join(baseDir, f)).mtime.getTime()
         return Math.abs(mt - timestamp) < 300000 && extensions.some((e) => f.toLowerCase().endsWith(e))
       })
@@ -724,10 +728,20 @@ class YouTubeEmptyFileHandler {
         if (stderr && isYouTubeCriticalError(stderr)) throw new Error(`Critical error: ${stderr}`)
 
         if (!fs.existsSync(outputPath)) {
-          const found = findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
+          const allExts = format === "mp3"
+            ? [".mp3", ".m4a", ".opus", ".ogg", ".webm"]
+            : [".mp4", ".webm", ".mkv"]
+          const found = findRecentFile(DOWNLOADS, Date.now(), allExts)
           if (!found) throw new Error("Output file not created after retry")
           if (fs.statSync(found).size < 1000) throw new Error("Output file too small after retry")
-          return { success: true, filePath: found, size: fs.statSync(found).size }
+          // Rename to expected extension if needed
+          const expectedExt = format === "mp3" ? ".mp3" : ".mp4"
+          const finalFound = found.endsWith(expectedExt) ? found : (() => {
+            const renamed = found.replace(/\.[^/.]+$/, expectedExt)
+            fs.renameSync(found, renamed)
+            return renamed
+          })()
+          return { success: true, filePath: finalFound, size: fs.statSync(finalFound).size }
         }
 
         if (fs.statSync(outputPath).size < 1000) throw new Error("Output file too small after retry")
@@ -811,9 +825,31 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
             }
           }
 
-          const finalPath = fs.existsSync(outputPath) ? outputPath : findRecentFile(DOWNLOADS, Date.now(), [`.${format === "mp3" ? "mp3" : "mp4"}`])
+          // Search for the output file. yt-dlp may change the extension depending
+          // on what formats YouTube actually served (e.g. .webm instead of .mp4,
+          // .opus/.m4a instead of .mp3). We search all possible extensions but
+          // filter by uniqueId prefix so we never pick up another user's file.
+          let finalPath = null
+          if (fs.existsSync(outputPath)) {
+            finalPath = outputPath
+          } else {
+            // Try all extensions yt-dlp might have used
+            const allExts = format === "mp3"
+              ? [".mp3", ".m4a", ".opus", ".ogg", ".wav", ".webm"]
+              : [".mp4", ".webm", ".mkv", ".avi", ".mov"]
+            finalPath = findRecentFile(DOWNLOADS, Date.now(), allExts, uniqueId)
+          }
           if (!finalPath) throw new Error("Output file not found after download")
           if (fs.statSync(finalPath).size < 1000) throw new Error("Output file too small")
+          
+          // If yt-dlp saved with a different extension, rename to expected extension
+          const expectedExt = format === "mp3" ? ".mp3" : ".mp4"
+          if (!finalPath.endsWith(expectedExt)) {
+            const renamedPath = finalPath.replace(/\.[^/.]+$/, expectedExt)
+            fs.renameSync(finalPath, renamedPath)
+            finalPath = renamedPath
+            console.log(`[YT] Renamed output to expected extension: ${path.basename(renamedPath)}`)
+          }
 
           console.log(`[YT] Success with ${strategy.name}`)
           return { success: true, data, finalFilePath: finalPath, stats: fs.statSync(finalPath), durationCheck, strategy: strategy.name }
@@ -1242,6 +1278,18 @@ app.listen(PORT, async () => {
   console.log(`[STARTUP] GC: ${typeof global.gc === "function" ? "native" : "manual fallback (set NODE_OPTIONS=--expose-gc)"}`)
 
   await ensureYtDlpUpdated()
+  
+  // Verify ffmpeg is available — required for MP4 merge and MP3 conversion.
+  // If missing, YouTube downloads will fail silently because yt-dlp cannot
+  // merge the separate video and audio streams it downloads from YouTube.
+  try {
+    const { stdout: ffmpegVer } = await executeSecureCommand("ffmpeg", ["-version"], { timeout: 10000 })
+    console.log(`[STARTUP] ffmpeg OK: ${ffmpegVer.split("\n")[0]}`)
+  } catch (err) {
+    console.error("[STARTUP] ffmpeg NOT FOUND - YouTube MP4 downloads will fail! Install ffmpeg in your Railway environment.")
+    console.error("[STARTUP] Add to your Dockerfile or Railway config: apt-get install -y ffmpeg")
+  }
+
   createSecureCookieFiles()
   loadCookiePool()
   cleanupOldFiles()
