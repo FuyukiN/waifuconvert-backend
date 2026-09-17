@@ -443,15 +443,17 @@ function buildSecureCommand(userAgent, cookieFile, platform) {
 // Strategy 2: no cookies — avoids banned-account risk, useful when all cookies are blocked.
 // Strategy 3: compat mode — enables older yt-dlp extraction paths as last resort.
 class YouTubeBypassStrategies {
+  // Strategy 1: TV client — does not require PO Token as of yt-dlp 2026.
+  // YouTube treats TV client as a smart TV app with a separate auth flow
+  // that bypasses the browser-side PO Token check entirely.
   static strategy1(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
+      "--extractor-args", "youtube:player_client=tv,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "--add-header", "Sec-Fetch-Mode:navigate",
-      "--add-header", "Sec-Fetch-Site:same-origin",
       "--sleep-interval", "1",
       "--max-sleep-interval", "3",
       "--extractor-retries", "5",
@@ -463,13 +465,14 @@ class YouTubeBypassStrategies {
     return args
   }
 
-  static strategy2(userAgent) {
-    return [
+  // Strategy 2: iOS client — also bypasses PO Token via the YouTube iOS app API endpoint.
+  static strategy2(userAgent, cookieFile) {
+    const args = [
       "--user-agent", userAgent,
+      "--extractor-args", "youtube:player_client=ios,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
-      "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "--sleep-interval", "2",
       "--max-sleep-interval", "5",
       "--extractor-retries", "3",
@@ -478,11 +481,15 @@ class YouTubeBypassStrategies {
       "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors",
       "--no-check-certificates", "--ignore-no-formats-error",
     ]
+    if (cookieFile) args.push("--cookies", cookieFile)
+    return args
   }
 
+  // Strategy 3: Android client as last resort — oldest bypass, most compatible.
   static strategy3(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
+      "--extractor-args", "youtube:player_client=android,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -491,8 +498,7 @@ class YouTubeBypassStrategies {
       "--extractor-retries", "2",
       "--fragment-retries", "2",
       "--retry-sleep", "5",
-      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors",
-      "--compat-options", "all", "--ignore-no-formats-error",
+      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors", "--ignore-no-formats-error",
     ]
     if (cookieFile) args.push("--cookies", cookieFile)
     return args
@@ -764,9 +770,9 @@ class YouTubeEmptyFileHandler {
 
 async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
   const strategies = [
-    { name: "Strategy 1: Cookies + Headers", fn: YouTubeBypassStrategies.strategy1, useCookie: true, timeout: 45000 },
-    { name: "Strategy 2: No Cookies + Bypass", fn: YouTubeBypassStrategies.strategy2, useCookie: false, timeout: 30000 },
-    { name: "Strategy 3: Compat Mode", fn: YouTubeBypassStrategies.strategy3, useCookie: true, timeout: 60000 },
+    { name: "Strategy 1: TV Client", fn: YouTubeBypassStrategies.strategy1, useCookie: true, timeout: 45000 },
+    { name: "Strategy 2: iOS Client", fn: YouTubeBypassStrategies.strategy2, useCookie: true, timeout: 45000 },
+    { name: "Strategy 3: Android Client", fn: YouTubeBypassStrategies.strategy3, useCookie: true, timeout: 60000 },
   ]
 
   let lastError = null
@@ -779,7 +785,7 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
 
           const cookieFile = strategy.useCookie ? getSmartCookie("youtube") : null
           const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
-          const baseArgs = strategy.useCookie ? strategy.fn(userAgent, cookieFile) : strategy.fn(userAgent)
+          const baseArgs = strategy.fn(userAgent, cookieFile)
 
           console.log(`[YT] Trying ${strategy.name}`)
 
