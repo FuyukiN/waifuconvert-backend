@@ -459,7 +459,7 @@ class YouTubeBypassStrategies {
       "--extractor-retries", "5",
       "--fragment-retries", "5",
       "--retry-sleep", "2",
-      "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors", "--ignore-no-formats-error",
+      "--no-playlist", "--geo-bypass", "--ignore-errors", "--ignore-no-formats-error",
     ]
     if (cookieFile) args.push("--cookies", cookieFile)
     return args
@@ -816,6 +816,11 @@ async function tryYouTubeDownloadStrategies(url, format, quality, uniqueId) {
             : [...baseArgs, "-f", getFormatSelector("mp4", quality, "youtube"), "--merge-output-format", "mp4", "--add-metadata", "-o", outputPath, url]
 
           const { stderr } = await executeSecureCommand(ytDlpPath, downloadArgs, { timeout: 300000 })
+
+          // Log full stderr so we can diagnose exactly why downloads fail
+          if (stderr && stderr.trim()) {
+            console.log(`[YT-STDERR] ${strategy.name}: ${stderr.substring(0, 800)}`)
+          }
 
           if (stderr) {
             if (is429Error({ message: stderr })) throw new Error(`429: ${stderr.substring(0, 100)}`)
