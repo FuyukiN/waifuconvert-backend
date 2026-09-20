@@ -70,17 +70,50 @@ const fileMap = new Map()
 
 // ============================================================
 // PROXY CONFIGURATION
-// Set PROXY_URL in Railway environment variables to route YouTube
-// requests through a residential proxy, bypassing datacenter IP blocks.
-// Format: socks5://user:pass@host:port  or  http://user:pass@host:port
-// Free residential proxies: webshare.io (10 free proxies)
+// Supports up to 10 rotating residential proxies via environment variables:
+//   PROXY_URL_01 = socks5://user:pass@host:port
+//   PROXY_URL_02 = socks5://user:pass@host:port
+//   ...up to PROXY_URL_10
+// Or a single proxy via PROXY_URL (legacy, still supported).
+// Proxies are rotated round-robin across YouTube requests to distribute
+// load and avoid any single proxy getting rate-limited.
+// Get free residential proxies at webshare.io (10 free slots).
 // ============================================================
 
+let proxyPool = []
+let proxyRoundRobinIndex = 0
+
+function loadProxyPool() {
+  proxyPool = []
+
+  // Load numbered proxies PROXY_URL_01 to PROXY_URL_10
+  for (let i = 1; i <= 10; i++) {
+    const key = `PROXY_URL_${String(i).padStart(2, "0")}`
+    const val = process.env[key]
+    if (val && val.trim()) proxyPool.push(val.trim())
+  }
+
+  // Fallback: single PROXY_URL for backwards compatibility
+  if (proxyPool.length === 0 && process.env.PROXY_URL) {
+    proxyPool.push(process.env.PROXY_URL.trim())
+  }
+
+  if (proxyPool.length > 0) {
+    console.log(`[PROXY] Pool loaded: ${proxyPool.length} proxies`)
+  } else {
+    console.log("[PROXY] No proxies configured (set PROXY_URL_01..10 in Railway)")
+  }
+}
+
 function getProxyArgs() {
-  const proxyUrl = process.env.PROXY_URL
-  if (!proxyUrl || proxyUrl.trim() === "") return []
-  console.log(`[PROXY] Using proxy: ${proxyUrl.replace(/:([^:@]+)@/, ":***@")}`)
-  return ["--proxy", proxyUrl.trim()]
+  if (proxyPool.length === 0) return []
+
+  const idx = proxyRoundRobinIndex % proxyPool.length
+  proxyRoundRobinIndex = (idx + 1) % proxyPool.length
+  const proxy = proxyPool[idx]
+
+  console.log(`[PROXY] Using proxy slot ${idx + 1}/${proxyPool.length}: ${proxy.replace(/:([^:@]+)@/, ":***@")}`)
+  return ["--proxy", proxy]
 }
 
 // ============================================================
@@ -1325,12 +1358,7 @@ app.listen(PORT, async () => {
   logMemoryUsage()
 
   console.log(`[STARTUP] Cache TTL: 24h | Cleanup: 15min | Memory: 5min | yt-dlp update: 48h`)
-  const proxyUrl = process.env.PROXY_URL
-  if (proxyUrl) {
-    console.log(`[STARTUP] Proxy configured: ${proxyUrl.replace(/:([^:@]+)@/, ":***@")}`)
-  } else {
-    console.log("[STARTUP] No proxy configured (set PROXY_URL in Railway to route YouTube through residential IP)")
-  }
+  loadProxyPool()
   console.log("[STARTUP] Ready")
 })
 
