@@ -69,6 +69,21 @@ let generalCookiePool = []
 const fileMap = new Map()
 
 // ============================================================
+// PROXY CONFIGURATION
+// Set PROXY_URL in Railway environment variables to route YouTube
+// requests through a residential proxy, bypassing datacenter IP blocks.
+// Format: socks5://user:pass@host:port  or  http://user:pass@host:port
+// Free residential proxies: webshare.io (10 free proxies)
+// ============================================================
+
+function getProxyArgs() {
+  const proxyUrl = process.env.PROXY_URL
+  if (!proxyUrl || proxyUrl.trim() === "") return []
+  console.log(`[PROXY] Using proxy: ${proxyUrl.replace(/:([^:@]+)@/, ":***@")}`)
+  return ["--proxy", proxyUrl.trim()]
+}
+
+// ============================================================
 // DOWNLOAD CACHE
 // Key: SHA-256 hash of (normalizedUrl + format + quality)
 // Value: { filePath, title, size, createdAt }
@@ -462,6 +477,7 @@ class YouTubeBypassStrategies {
       "--no-playlist", "--geo-bypass", "--ignore-errors", "--ignore-no-formats-error",
     ]
     if (cookieFile) args.push("--cookies", cookieFile)
+    args.push(...getProxyArgs())
     return args
   }
 
@@ -482,6 +498,7 @@ class YouTubeBypassStrategies {
       "--no-check-certificates", "--ignore-no-formats-error",
     ]
     if (cookieFile) args.push("--cookies", cookieFile)
+    args.push(...getProxyArgs())
     return args
   }
 
@@ -501,6 +518,7 @@ class YouTubeBypassStrategies {
       "--no-warnings", "--no-playlist", "--geo-bypass", "--ignore-errors", "--ignore-no-formats-error",
     ]
     if (cookieFile) args.push("--cookies", cookieFile)
+    args.push(...getProxyArgs())
     return args
   }
 }
@@ -1307,6 +1325,12 @@ app.listen(PORT, async () => {
   logMemoryUsage()
 
   console.log(`[STARTUP] Cache TTL: 24h | Cleanup: 15min | Memory: 5min | yt-dlp update: 48h`)
+  const proxyUrl = process.env.PROXY_URL
+  if (proxyUrl) {
+    console.log(`[STARTUP] Proxy configured: ${proxyUrl.replace(/:([^:@]+)@/, ":***@")}`)
+  } else {
+    console.log("[STARTUP] No proxy configured (set PROXY_URL in Railway to route YouTube through residential IP)")
+  }
   console.log("[STARTUP] Ready")
 })
 
