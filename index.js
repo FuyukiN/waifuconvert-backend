@@ -515,7 +515,7 @@ class YouTubeBypassStrategies {
   static strategy1(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=tv,default;po_token=tv+",
+      "--extractor-args", "youtube:player_client=web_creator,tv,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -536,7 +536,7 @@ class YouTubeBypassStrategies {
   static strategy2(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=ios,default;po_token=ios+",
+      "--extractor-args", "youtube:player_client=web_embedded,ios,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -557,7 +557,7 @@ class YouTubeBypassStrategies {
   static strategy3(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=mweb,android,default",
+      "--extractor-args", "youtube:player_client=tv_embedded,mweb,android,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -982,11 +982,13 @@ const downloadLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, max: 20,
   message: { error: "Too many download attempts. Please try again in a few minutes.", type: "rate_limit_exceeded" },
   standardHeaders: true, legacyHeaders: false,
+  validate: { trustProxy: false },
 })
 
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000, max: 60,
   message: { error: "Too many requests. Please try again in 1 minute.", type: "rate_limit_exceeded" },
+  validate: { trustProxy: false },
 })
 
 app.use(generalLimiter)
