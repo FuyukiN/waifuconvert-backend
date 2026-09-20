@@ -278,9 +278,27 @@ function logMemoryUsage() {
 async function ensureYtDlpUpdated() {
   try {
     console.log("[YT-DLP] Checking for updates...")
+    // yt-dlp[default] includes the JS challenge solver scripts required
+    // for YouTube's SABR streaming experiment (n-challenge solving).
+    // Without these scripts, yt-dlp cannot decrypt the stream URLs.
     await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp[default]"], { timeout: 60000 })
+    
+    // Also install the yt-dlp JS helper explicitly to ensure challenge solver is present
+    try {
+      await executeSecureCommand("yt-dlp", ["--update-to", "nightly"], { timeout: 60000 })
+    } catch (_) {}
+
     const { stdout } = await executeSecureCommand("yt-dlp", ["--version"], { timeout: 10000 })
     console.log(`[YT-DLP] Version: ${stdout.trim()}`)
+
+    // Verify JS runtime is working for challenge solving
+    try {
+      const { stdout: nodeVer } = await executeSecureCommand("node", ["--version"], { timeout: 5000 })
+      console.log(`[YT-DLP] Node.js runtime for challenge solving: ${nodeVer.trim()}`)
+    } catch {
+      console.warn("[YT-DLP] Node.js not found in PATH - n-challenge solving may fail")
+    }
+
     return true
   } catch (err) {
     console.warn("[YT-DLP] Update failed (using current version):", err.message)
@@ -497,7 +515,7 @@ class YouTubeBypassStrategies {
   static strategy1(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=tv,default",
+      "--extractor-args", "youtube:player_client=tv,default;po_token=tv+",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -518,7 +536,7 @@ class YouTubeBypassStrategies {
   static strategy2(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=ios,default",
+      "--extractor-args", "youtube:player_client=ios,default;po_token=ios+",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
@@ -539,7 +557,7 @@ class YouTubeBypassStrategies {
   static strategy3(userAgent, cookieFile) {
     const args = [
       "--user-agent", userAgent,
-      "--extractor-args", "youtube:player_client=android,default",
+      "--extractor-args", "youtube:player_client=mweb,android,default",
       "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
