@@ -292,6 +292,22 @@ async function ensureYtDlpUpdated() {
       console.log("[YT-DLP] Installing yt-dlp-ejs...")
       await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp-ejs"], { timeout: 60000 })
       console.log("[YT-DLP] yt-dlp-ejs installed OK")
+
+      // Find where pip installed the EJS scripts and set YTDLP_EJS_PATH
+      // so yt-dlp can locate them regardless of PATH configuration
+      try {
+        const { stdout: ejsLocation } = await executeSecureCommand(
+          "python3", ["-c", "import yt_dlp_ejs; import os; print(os.path.dirname(yt_dlp_ejs.__file__))"],
+          { timeout: 10000 }
+        )
+        const ejsPath = ejsLocation.trim()
+        if (ejsPath) {
+          process.env.YTDLP_EJS_PATH = ejsPath
+          console.log(`[YT-DLP] EJS scripts path set: ${ejsPath}`)
+        }
+      } catch (pathErr) {
+        console.warn("[YT-DLP] Could not locate EJS scripts path:", pathErr.message)
+      }
     } catch (ejsErr) {
       try {
         await executeSecureCommand("npm", ["install", "-g", "yt-dlp-ejs"], { timeout: 60000 })
@@ -301,29 +317,15 @@ async function ensureYtDlpUpdated() {
       }
     }
 
-    // Install Deno — the recommended EJS JS runtime for yt-dlp challenge solving.
-    // Requires unzip to be installed first (not present by default on Railway).
+    // Log Node.js version — used as the EJS JS runtime for challenge solving
     try {
-      const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
-      console.log(`[YT-DLP] Deno already available: ${denoVer.split("\n")[0]}`)
+      const { stdout: nodeVer } = await executeSecureCommand("node", ["--version"], { timeout: 5000 })
+      console.log(`[YT-DLP] Node.js runtime: ${nodeVer.trim()}`)
+      // Tell yt-dlp explicitly where node is so EJS can find it
+      const { stdout: nodePath } = await executeSecureCommand("which", ["node"], { timeout: 5000 })
+      console.log(`[YT-DLP] Node.js path: ${nodePath.trim()}`)
     } catch {
-      console.log("[YT-DLP] Deno not found, installing...")
-      try {
-        // Install unzip first — required by the Deno installer
-        await executeSecureCommand("apt-get", ["install", "-y", "unzip"], { timeout: 30000 })
-        console.log("[YT-DLP] unzip installed OK")
-      } catch (unzipErr) {
-        console.warn("[YT-DLP] unzip install failed:", unzipErr.message)
-      }
-      try {
-        await executeSecureCommand("sh", ["-c", "curl -fsSL https://deno.land/install.sh | sh"], { timeout: 120000 })
-        process.env.PATH = `${process.env.HOME}/.deno/bin:${process.env.PATH}`
-        const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
-        console.log(`[YT-DLP] Deno installed: ${denoVer.split("\n")[0]}`)
-      } catch (denoErr) {
-        console.warn("[YT-DLP] Deno install failed, will use Node.js:", denoErr.message)
-        // Node.js is the fallback — strategy2 and strategy3 use --js-runtimes node
-      }
+      console.warn("[YT-DLP] Node.js not found in PATH")
     }
 
     // Verify Node.js as fallback runtime
@@ -551,7 +553,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=web_creator,tv,default",
-      "--js-runtimes", "deno",
+      "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
