@@ -278,25 +278,40 @@ function logMemoryUsage() {
 async function ensureYtDlpUpdated() {
   try {
     console.log("[YT-DLP] Checking for updates...")
-    // yt-dlp[default] includes the JS challenge solver scripts required
-    // for YouTube's SABR streaming experiment (n-challenge solving).
-    // Without these scripts, yt-dlp cannot decrypt the stream URLs.
+
+    // Update yt-dlp core
     await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp[default]"], { timeout: 60000 })
-    
-    // Also install the yt-dlp JS helper explicitly to ensure challenge solver is present
-    try {
-      await executeSecureCommand("yt-dlp", ["--update-to", "nightly"], { timeout: 60000 })
-    } catch (_) {}
 
     const { stdout } = await executeSecureCommand("yt-dlp", ["--version"], { timeout: 10000 })
     console.log(`[YT-DLP] Version: ${stdout.trim()}`)
 
-    // Verify JS runtime is working for challenge solving
+    // Install yt-dlp-ejs — the External JS Scripts package required by yt-dlp 2026+
+    // to solve YouTube's signature and n-challenge (SABR streaming protection).
+    // Without this, all YouTube downloads fail with "Signature solving failed"
+    // and "GVS PO Token not provided" errors regardless of cookies or player_client.
+    // Docs: https://github.com/yt-dlp/yt-dlp/wiki/EJS
+    try {
+      console.log("[YT-DLP] Installing yt-dlp-ejs (EJS challenge solver)...")
+      await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp-ejs"], { timeout: 60000 })
+      console.log("[YT-DLP] yt-dlp-ejs installed OK")
+    } catch (ejsErr) {
+      // Try npm as fallback if pip fails
+      console.warn("[YT-DLP] pip install yt-dlp-ejs failed, trying npm...")
+      try {
+        await executeSecureCommand("npm", ["install", "-g", "yt-dlp-ejs"], { timeout: 60000 })
+        console.log("[YT-DLP] yt-dlp-ejs installed via npm OK")
+      } catch (npmErr) {
+        console.warn("[YT-DLP] yt-dlp-ejs install failed via both pip and npm:", npmErr.message)
+        console.warn("[YT-DLP] YouTube downloads may fail without EJS. Add yt-dlp-ejs to your Railway build.")
+      }
+    }
+
+    // Verify Node.js is accessible for JS runtime challenge solving
     try {
       const { stdout: nodeVer } = await executeSecureCommand("node", ["--version"], { timeout: 5000 })
-      console.log(`[YT-DLP] Node.js runtime for challenge solving: ${nodeVer.trim()}`)
+      console.log(`[YT-DLP] Node.js runtime: ${nodeVer.trim()}`)
     } catch {
-      console.warn("[YT-DLP] Node.js not found in PATH - n-challenge solving may fail")
+      console.warn("[YT-DLP] Node.js not found in PATH")
     }
 
     return true
@@ -516,7 +531,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=web_creator,tv,default",
-      "--js-runtimes", "node",
+      "--js-runtimes", "deno,node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -537,7 +552,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=web_embedded,ios,default",
-      "--js-runtimes", "node",
+      "--js-runtimes", "deno,node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--sleep-interval", "2",
@@ -558,7 +573,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=tv_embedded,mweb,android,default",
-      "--js-runtimes", "node",
+      "--js-runtimes", "deno,node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--sleep-interval", "3",
