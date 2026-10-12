@@ -285,28 +285,41 @@ async function ensureYtDlpUpdated() {
     const { stdout } = await executeSecureCommand("yt-dlp", ["--version"], { timeout: 10000 })
     console.log(`[YT-DLP] Version: ${stdout.trim()}`)
 
-    // Install yt-dlp-ejs — the External JS Scripts package required by yt-dlp 2026+
-    // to solve YouTube's signature and n-challenge (SABR streaming protection).
-    // Without this, all YouTube downloads fail with "Signature solving failed"
-    // and "GVS PO Token not provided" errors regardless of cookies or player_client.
+    // Install yt-dlp-ejs — External JS Scripts required by yt-dlp 2026+
+    // to solve YouTube SABR signature and n-challenge.
     // Docs: https://github.com/yt-dlp/yt-dlp/wiki/EJS
     try {
-      console.log("[YT-DLP] Installing yt-dlp-ejs (EJS challenge solver)...")
+      console.log("[YT-DLP] Installing yt-dlp-ejs...")
       await executeSecureCommand("pip", ["install", "--upgrade", "yt-dlp-ejs"], { timeout: 60000 })
       console.log("[YT-DLP] yt-dlp-ejs installed OK")
     } catch (ejsErr) {
-      // Try npm as fallback if pip fails
-      console.warn("[YT-DLP] pip install yt-dlp-ejs failed, trying npm...")
       try {
         await executeSecureCommand("npm", ["install", "-g", "yt-dlp-ejs"], { timeout: 60000 })
         console.log("[YT-DLP] yt-dlp-ejs installed via npm OK")
       } catch (npmErr) {
-        console.warn("[YT-DLP] yt-dlp-ejs install failed via both pip and npm:", npmErr.message)
-        console.warn("[YT-DLP] YouTube downloads may fail without EJS. Add yt-dlp-ejs to your Railway build.")
+        console.warn("[YT-DLP] yt-dlp-ejs install failed:", npmErr.message)
       }
     }
 
-    // Verify Node.js is accessible for JS runtime challenge solving
+    // Install Deno — the recommended EJS JS runtime (enabled by default in yt-dlp)
+    // Node.js works but Deno is faster and more reliable for challenge solving
+    try {
+      const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
+      console.log(`[YT-DLP] Deno already available: ${denoVer.split("\n")[0]}`)
+    } catch {
+      console.log("[YT-DLP] Deno not found, installing...")
+      try {
+        await executeSecureCommand("sh", ["-c", "curl -fsSL https://deno.land/install.sh | sh"], { timeout: 120000 })
+        // Add deno to PATH for this process
+        process.env.PATH = `${process.env.HOME}/.deno/bin:${process.env.PATH}`
+        const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
+        console.log(`[YT-DLP] Deno installed: ${denoVer.split("\n")[0]}`)
+      } catch (denoErr) {
+        console.warn("[YT-DLP] Deno install failed, will use Node.js:", denoErr.message)
+      }
+    }
+
+    // Verify Node.js as fallback runtime
     try {
       const { stdout: nodeVer } = await executeSecureCommand("node", ["--version"], { timeout: 5000 })
       console.log(`[YT-DLP] Node.js runtime: ${nodeVer.trim()}`)
@@ -531,7 +544,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=web_creator,tv,default",
-      "--js-runtimes", "deno,node",
+      "--js-runtimes", "deno",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -552,7 +565,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=web_embedded,ios,default",
-      "--js-runtimes", "deno,node",
+      "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--sleep-interval", "2",
@@ -573,7 +586,7 @@ class YouTubeBypassStrategies {
     const args = [
       "--user-agent", userAgent,
       "--extractor-args", "youtube:player_client=tv_embedded,mweb,android,default",
-      "--js-runtimes", "deno,node",
+      "--js-runtimes", "node",
       "--referer", "https://www.youtube.com/",
       "--add-header", "Accept-Language:en-US,en;q=0.9",
       "--sleep-interval", "3",
@@ -776,7 +789,7 @@ function cleanupOldFiles() {
 
 async function getVideoInfoWithoutJson(url, userAgent, cookieFile, platform) {
   console.log("[INFO] Attempting title/duration fallback extraction")
-  const args = ["--user-agent", userAgent, "--js-runtimes", "node", "--no-playlist", "--get-title", "--get-duration"]
+  const args = ["--user-agent", userAgent, "--no-playlist", "--get-title", "--get-duration"]
   if (cookieFile && fs.existsSync(cookieFile)) args.push("--cookies", cookieFile)
   args.push(url)
 
