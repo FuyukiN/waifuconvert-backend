@@ -301,21 +301,28 @@ async function ensureYtDlpUpdated() {
       }
     }
 
-    // Install Deno — the recommended EJS JS runtime (enabled by default in yt-dlp)
-    // Node.js works but Deno is faster and more reliable for challenge solving
+    // Install Deno — the recommended EJS JS runtime for yt-dlp challenge solving.
+    // Requires unzip to be installed first (not present by default on Railway).
     try {
       const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
       console.log(`[YT-DLP] Deno already available: ${denoVer.split("\n")[0]}`)
     } catch {
       console.log("[YT-DLP] Deno not found, installing...")
       try {
+        // Install unzip first — required by the Deno installer
+        await executeSecureCommand("apt-get", ["install", "-y", "unzip"], { timeout: 30000 })
+        console.log("[YT-DLP] unzip installed OK")
+      } catch (unzipErr) {
+        console.warn("[YT-DLP] unzip install failed:", unzipErr.message)
+      }
+      try {
         await executeSecureCommand("sh", ["-c", "curl -fsSL https://deno.land/install.sh | sh"], { timeout: 120000 })
-        // Add deno to PATH for this process
         process.env.PATH = `${process.env.HOME}/.deno/bin:${process.env.PATH}`
         const { stdout: denoVer } = await executeSecureCommand("deno", ["--version"], { timeout: 5000 })
         console.log(`[YT-DLP] Deno installed: ${denoVer.split("\n")[0]}`)
       } catch (denoErr) {
         console.warn("[YT-DLP] Deno install failed, will use Node.js:", denoErr.message)
+        // Node.js is the fallback — strategy2 and strategy3 use --js-runtimes node
       }
     }
 
