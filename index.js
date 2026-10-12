@@ -869,6 +869,119 @@ class YouTubeEmptyFileHandler {
   }
 }
 
+
+// ============================================================
+// COBALT YOUTUBE DOWNLOADER
+// Cobalt is an open-source media downloader that bypasses
+// YouTube's SABR/EJS challenge system by using YouTube's
+// internal API directly (same approach as the official app).
+// Used exclusively for YouTube — TikTok/X/Instagram still
+// use yt-dlp which works fine for those platforms.
+// Set COBALT_API_URL in Railway env vars to enable.
+// ============================================================
+
+async function downloadWithCobalt(url, format, quality, outputDir, uniqueId) {
+  const cobaltUrl = process.env.COBALT_API_URL
+  if (!cobaltUrl) throw new Error("COBALT_API_URL not configured")
+
+  const cobaltBase = cobaltUrl.replace(/\/$/, "")
+  console.log(`[COBALT] Requesting: ${cobaltBase}`)
+
+  // Map our quality to Cobalt's format
+  const isAudio = format === "mp3"
+  const vQuality = isAudio ? "720" : String(quality) // cobalt ignores vQuality for audio
+  
+  const requestBody = {
+    url,
+    videoQuality: vQuality,
+    audioFormat: isAudio ? "mp3" : "best",
+    audioBitrate: isAudio ? String(quality) : "128",
+    isAudioOnly: isAudio,
+    filenameStyle: "basic",
+  }
+
+  console.log(`[COBALT] Request body: ${JSON.stringify(requestBody)}`)
+
+  // Call Cobalt API
+  const response = await fetch(`${cobaltBase}/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  })
+
+  if (!response.ok) {
+    const errText = await response.text()
+    throw new Error(`Cobalt API error ${response.status}: ${errText.substring(0, 200)}`)
+  }
+
+  const cobaltData = await response.json()
+  console.log(`[COBALT] Response status: ${cobaltData.status}`)
+
+  if (cobaltData.status === "error") {
+    throw new Error(`Cobalt error: ${cobaltData.error?.code || JSON.stringify(cobaltData.error)}`)
+  }
+
+  // Cobalt returns a tunnel URL or direct URL to download
+  const downloadUrl = cobaltData.url
+  if (!downloadUrl) {
+    throw new Error(`Cobalt returned no download URL. Response: ${JSON.stringify(cobaltData).substring(0, 200)}`)
+  }
+
+  console.log(`[COBALT] Got download URL, fetching file...`)
+
+  // Download the actual file from Cobalt's tunnel
+  const fileResponse = await fetch(downloadUrl, {
+    headers: { "User-Agent": USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] },
+  })
+
+  if (!fileResponse.ok) {
+    throw new Error(`Cobalt file download failed: HTTP ${fileResponse.status}`)
+  }
+
+  // Get title from Cobalt response or filename header
+  let title = cobaltData.filename || `youtube_${uniqueId}`
+  // Strip extension from title for display
+  title = title.replace(/\.(mp3|mp4|webm|m4a|ogg)$/i, "").replace(/-[a-f0-9]{8,}$/, "").trim() || "Video"
+
+  // Determine output filename
+  const ext = format === "mp3" ? "mp3" : "mp4"
+  const safeTitle = title.replace(/[^\w\s\-_.()]/g, "").replace(/\s+/g, "_").replace(/_{2,}/g, "_").substring(0, 50) || "WaifuConvert"
+  const qualLabel = format === "mp3" ? `${quality}kbps` : `${quality}p`
+  const outputFilename = `${safeTitle}-${qualLabel}-${uniqueId}.${ext}`
+  const outputPath = path.join(outputDir, outputFilename)
+
+  // Stream file to disk
+  const { Writable } = require("stream")
+  const fileStream = fs.createWriteStream(outputPath)
+  
+  await new Promise((resolve, reject) => {
+    const reader = fileResponse.body
+    if (!reader) { reject(new Error("No response body from Cobalt")); return }
+
+    // Node.js fetch returns a Web Streams ReadableStream
+    // We need to pipe it to a file
+    const nodeReadable = require("stream").Readable.fromWeb ? 
+      require("stream").Readable.fromWeb(reader) : reader
+
+    nodeReadable.pipe(fileStream)
+    fileStream.on("finish", resolve)
+    fileStream.on("error", reject)
+    nodeReadable.on("error", reject)
+  })
+
+  const stats = fs.statSync(outputPath)
+  if (stats.size < 1000) {
+    fs.unlinkSync(outputPath)
+    throw new Error(`Downloaded file too small (${stats.size} bytes) - likely an error page`)
+  }
+
+  console.log(`[COBALT] File saved: ${outputFilename} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`)
+  return { filePath: outputPath, title, size: stats.size }
+}
+
 // ============================================================
 // YOUTUBE MULTI-STRATEGY DOWNLOAD
 // Wraps each strategy with exponential backoff on 429 errors.
@@ -1135,6 +1248,22 @@ app.post("/download", async (req, res) => {
 
     // --- YouTube: dedicated multi-strategy handler with cache ---
     if (platform === "youtube") {
+      // Try Cobalt first if configured — it bypasses YouTube's EJS/SABR challenge system
+      if (process.env.COBALT_API_URL) {
+        try {
+          console.log("[DOWNLOAD] Trying Cobalt for YouTube...")
+          const cobaltResult = await downloadWithCobalt(url, format, quality, DOWNLOADS, uniqueId)
+          setCachedDownload(url, format, quality, cobaltResult.filePath, cobaltResult.title, cobaltResult.size)
+          return respondWithFile(res, cobaltResult.filePath,
+            { title: cobaltResult.title, duration: 0 },
+            format, quality, platform, { strategy_used: "cobalt" })
+        } catch (cobaltErr) {
+          console.warn("[DOWNLOAD] Cobalt failed, falling back to yt-dlp:", cobaltErr.message)
+          // Fall through to yt-dlp strategies below
+        }
+      }
+
+      // yt-dlp fallback (or primary if COBALT_API_URL not set)
       try {
         const result = await tryYouTubeDownloadStrategies(url, format, quality, uniqueId)
         setCachedDownload(url, format, quality, result.finalFilePath, result.data.title, fs.statSync(result.finalFilePath).size)
@@ -1414,6 +1543,8 @@ app.listen(PORT, async () => {
   cleanupOldFiles()
   logMemoryUsage()
 
+  const cobaltConfigured = !!process.env.COBALT_API_URL
+  console.log(`[STARTUP] Cobalt API: ${cobaltConfigured ? process.env.COBALT_API_URL : "not configured (set COBALT_API_URL)"}`)
   console.log(`[STARTUP] Cache TTL: 24h | Cleanup: 15min | Memory: 5min | yt-dlp update: 48h`)
   loadProxyPool()
   console.log("[STARTUP] Ready")
