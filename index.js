@@ -891,12 +891,24 @@ async function downloadWithCobalt(url, format, quality, outputDir, uniqueId) {
   const isAudio = format === "mp3"
   const vQuality = isAudio ? "720" : String(quality) // cobalt ignores vQuality for audio
   
+  // Cobalt API v10+ only requires "url" — all other fields are optional.
+  // Field names changed in recent versions: videoQuality -> vQuality, isAudioOnly -> downloadMode
+  // Strip playlist/autoplay params — Cobalt only wants the video URL
+  let cleanUrl = url
+  try {
+    const u = new URL(url)
+    if (u.hostname.includes("youtu")) {
+      const videoId = u.searchParams.get("v")
+      if (videoId) cleanUrl = `https://www.youtube.com/watch?v=${videoId}`
+    }
+  } catch {}
+
   const requestBody = {
-    url,
-    videoQuality: vQuality,
-    audioFormat: isAudio ? "mp3" : "best",
-    audioBitrate: isAudio ? String(quality) : "128",
-    isAudioOnly: isAudio,
+    url: cleanUrl,
+    vQuality: isAudio ? "max" : vQuality,
+    downloadMode: isAudio ? "audio" : "auto",
+    aFormat: isAudio ? "mp3" : "best",
+    aBitrate: isAudio ? String(quality) : "128",
     filenameStyle: "basic",
   }
 
