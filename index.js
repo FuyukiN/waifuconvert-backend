@@ -885,15 +885,10 @@ async function downloadWithCobalt(url, format, quality, outputDir, uniqueId) {
   if (!cobaltUrl) throw new Error("COBALT_API_URL not configured")
 
   const cobaltBase = cobaltUrl.replace(/\/$/, "")
-  console.log(`[COBALT] Requesting: ${cobaltBase}`)
-
-  // Map our quality to Cobalt's format
+  const cobaltApiKey = process.env.COBALT_API_KEY || ""
   const isAudio = format === "mp3"
-  const vQuality = isAudio ? "720" : String(quality) // cobalt ignores vQuality for audio
-  
-  // Cobalt API v10+ only requires "url" — all other fields are optional.
-  // Field names changed in recent versions: videoQuality -> vQuality, isAudioOnly -> downloadMode
-  // Strip playlist/autoplay params — Cobalt only wants the video URL
+
+  // Strip playlist params so Cobalt gets a clean video URL
   let cleanUrl = url
   try {
     const u = new URL(url)
@@ -903,24 +898,32 @@ async function downloadWithCobalt(url, format, quality, outputDir, uniqueId) {
     }
   } catch {}
 
+  console.log(`[COBALT] Requesting: ${cobaltBase} | audio: ${isAudio} | quality: ${quality}`)
+
+  // Cobalt v11 has strict schema validation — unknown fields cause invalid_body.
+  // Only send fields we know v11 accepts.
   const requestBody = {
     url: cleanUrl,
-    vQuality: isAudio ? "max" : vQuality,
+    videoQuality: isAudio ? "max" : String(quality),
     downloadMode: isAudio ? "audio" : "auto",
-    aFormat: isAudio ? "mp3" : "best",
-    aBitrate: isAudio ? String(quality) : "128",
+    audioFormat: isAudio ? "mp3" : "best",
+    audioBitrate: isAudio ? String(quality) : "128",
     filenameStyle: "basic",
   }
 
-  console.log(`[COBALT] Request body: ${JSON.stringify(requestBody)}`)
+  console.log(`[COBALT] Body: ${JSON.stringify(requestBody)}`)
+
+  // Include Api-Key header when COBALT_API_KEY is set (required when API_AUTH_REQUIRED=1)
+  const headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  }
+  if (cobaltApiKey) headers["Authorization"] = `Api-Key ${cobaltApiKey}`
 
   // Call Cobalt API
   const response = await fetch(`${cobaltBase}/`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
+    headers,
     body: JSON.stringify(requestBody),
   })
 
