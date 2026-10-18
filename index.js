@@ -900,15 +900,15 @@ async function downloadWithCobalt(url, format, quality, outputDir, uniqueId) {
 
   console.log(`[COBALT] Requesting: ${cobaltBase} | audio: ${isAudio} | quality: ${quality}`)
 
-  // Cobalt v11 has strict schema validation — unknown fields cause invalid_body.
-  // Only send fields we know v11 accepts.
+  // Cobalt v11 strict schema — send only documented fields.
+  // Unknown fields cause error.api.invalid_body immediately.
+  // Docs: https://github.com/imputnet/cobalt/blob/main/docs/api.md
   const requestBody = {
     url: cleanUrl,
     videoQuality: isAudio ? "max" : String(quality),
     downloadMode: isAudio ? "audio" : "auto",
     audioFormat: isAudio ? "mp3" : "best",
     audioBitrate: isAudio ? String(quality) : "128",
-    filenameStyle: "basic",
   }
 
   console.log(`[COBALT] Body: ${JSON.stringify(requestBody)}`)
